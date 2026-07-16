@@ -1,0 +1,31 @@
+[project]
+name = "cassis-cli"
+version = "0.1.0"
+description = "Cassis CLI — run Cassis actions (ontology validation) from your CI pipelines"
+readme = "README.md"
+license = { text = "Proprietary" }
+authors = [{ name = "Cassis", email = "tech.admin@getcassis.com" }]
+keywords = ["cassis", "ontology", "ci", "text-to-sql"]
+# Customer CI images — keep this floor low and the code 3.10-compatible,
+# regardless of the monorepo's own Python pin.
+requires-python = ">=3.10,<4.0"
+dependencies = [
+    "typer (>=0.12,<1.0)",
+    "httpx (>=0.24,<1.0)",
+]
+
+[project.scripts]
+cassis = "cassis_cli.main:app"
+
+[tool.poetry]
+packages = [{ include = "cassis_cli" }]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^9.0.0"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
