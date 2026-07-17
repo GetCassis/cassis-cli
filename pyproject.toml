@@ -1,7 +1,7 @@
 [project]
 name = "cassis-cli"
-version = "0.1.0"
-description = "Cassis CLI — run Cassis actions (ontology validation) from your CI pipelines"
+version = "0.2.0"
+description = "Cassis CLI — run Cassis actions (ontology validation, upload and publish) from your CI pipelines"
 readme = "README.md"
 license = { text = "Proprietary" }
 authors = [{ name = "Cassis", email = "tech.admin@getcassis.com" }]
