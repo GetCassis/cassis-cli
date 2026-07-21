@@ -13,98 +13,22 @@ from cassis_cli.api import (
     ApiError,
     AuthError,
     UploadValidationError,
+    get_ontology_export,
     post_ontology_check,
     post_ontology_import,
 )
+from cassis_cli.common import (
+    DEFAULT_BASE_PATH,
+    EXIT_OK,
+    EXIT_TRANSPORT,
+    EXIT_USAGE,
+    EXIT_VALIDATION_FAILED,
+)
+from cassis_cli.common import collect_files as _collect_files
+from cassis_cli.common import collect_tree as _collect_tree
+from cassis_cli.common import require_api_key as _require_api_key
 
 app = typer.Typer(no_args_is_help=True, help="Ontology commands.")
-
-# Repository directory the ontology tree is exported under. Must match the
-# project's git-sync "Path" setting in Cassis (default "cassis").
-DEFAULT_BASE_PATH = "cassis"
-
-# Exit codes (documented in the README; stable contract for CI scripts).
-EXIT_OK = 0
-EXIT_VALIDATION_FAILED = 1
-EXIT_USAGE = 2
-EXIT_TRANSPORT = 3
-
-# Request ceilings of POST /api/ci/ontology-check, mirrored so oversized trees
-# fail fast with a clear message before any upload. Source of truth:
-# backend/app/schemas/ci.py (the server's 422 remains the backstop).
-MAX_FILES = 2000
-MAX_TOTAL_BYTES = 5 * 1024 * 1024
-
-
-def _collect_files(ontology_dir: Path) -> dict[str, str]:
-    """Read every YAML file under the ontology dir, keyed by posix relpath.
-
-    Exits 2 (usage) on an unreadable or non-UTF-8 file — a local checkout
-    problem, reported before anything is sent to the API.
-    """
-    files: dict[str, str] = {}
-    for pattern in ("**/*.yml", "**/*.yaml"):
-        for file in sorted(ontology_dir.glob(pattern)):
-            if file.is_file():
-                try:
-                    files[file.relative_to(ontology_dir).as_posix()] = file.read_text(encoding="utf-8")
-                except (UnicodeDecodeError, OSError) as exc:
-                    typer.secho(f"Cannot read {file}: {exc}", fg=typer.colors.RED, err=True)
-                    raise typer.Exit(EXIT_USAGE) from exc
-    return files
-
-
-def _require_api_key(api_key: Optional[str]) -> str:
-    """Exit 2 (usage) when no API key was provided."""
-    if not api_key:
-        typer.secho(
-            "No API key. Set CASSIS_API_KEY or pass --api-key "
-            "(create one in Cassis under Organization settings -> API keys).",
-            fg=typer.colors.RED,
-            err=True,
-        )
-        raise typer.Exit(EXIT_USAGE)
-    return api_key
-
-
-def _collect_tree(path: Path, base_path: str) -> "tuple[dict[str, str], str]":
-    """Resolve the ontology dir under the checkout and read its YAML tree.
-
-    Returns ``(files, normalized_base_path)``. Exits 2 (usage) on an empty or
-    missing dir, or a tree beyond the API request ceilings — all local checkout
-    problems, reported before anything is sent to the API.
-    """
-    base_path = base_path.strip().strip("/")
-    if not base_path:
-        typer.secho("--base-path must not be empty.", fg=typer.colors.RED, err=True)
-        raise typer.Exit(EXIT_USAGE)
-
-    ontology_dir = path / Path(base_path)
-    if not ontology_dir.is_dir():
-        typer.secho(
-            f"No {base_path}/ directory found under {path}. "
-            "If the project exports to a custom path, pass it with --base-path (or CASSIS_BASE_PATH).",
-            fg=typer.colors.RED,
-            err=True,
-        )
-        raise typer.Exit(EXIT_USAGE)
-
-    files = _collect_files(ontology_dir)
-    if not files:
-        typer.secho(f"No YAML files found under {ontology_dir}.", fg=typer.colors.RED, err=True)
-        raise typer.Exit(EXIT_USAGE)
-
-    total_bytes = sum(len(content.encode()) for content in files.values())
-    if len(files) > MAX_FILES or total_bytes > MAX_TOTAL_BYTES:
-        typer.secho(
-            f"Ontology tree too large: {len(files)} files / {total_bytes / (1024 * 1024):.1f} MB "
-            f"(limits: {MAX_FILES} files / {MAX_TOTAL_BYTES // (1024 * 1024)} MB). "
-            "Check that --base-path points at the ontology directory, not a larger tree.",
-            fg=typer.colors.RED,
-            err=True,
-        )
-        raise typer.Exit(EXIT_USAGE)
-    return files, base_path
 
 
 @app.command()
@@ -163,6 +87,109 @@ def check(
             typer.echo(f"  {location}{finding.get('message', '')} ({finding.get('stage', '?')})")
 
     raise typer.Exit(EXIT_OK if result["passed"] else EXIT_VALIDATION_FAILED)
+
+
+@app.command()
+def pull(
+    path: Path = typer.Argument(
+        Path("."),
+        help="Repository checkout root (the directory containing the ontology export path).",
+    ),
+    project_id: str = typer.Option(
+        ...,
+        "--project",
+        envvar="CASSIS_PROJECT_ID",
+        help="Source Cassis project ID (UUID, shown in the project's URL).",
+    ),
+    api_key: Optional[str] = typer.Option(
+        None,
+        "--api-key",
+        envvar="CASSIS_API_KEY",
+        help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+    ),
+    api_url: str = typer.Option(
+        DEFAULT_API_URL,
+        "--api-url",
+        envvar="CASSIS_API_URL",
+        help="Cassis API base URL.",
+    ),
+    base_path: str = typer.Option(
+        DEFAULT_BASE_PATH,
+        "--base-path",
+        envvar="CASSIS_BASE_PATH",
+        help="Repository directory the ontology is exported under (the project's git-sync Path setting).",
+    ),
+    prune: bool = typer.Option(
+        True,
+        "--prune/--no-prune",
+        help="Delete local YAML files that no longer exist in the project's ontology (default: prune).",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print a JSON summary of written/deleted files."),
+) -> None:
+    """Download the project's unpublished ontology into a repository checkout.
+
+    Writes the ontology YAML tree under the export path (full sync: files are
+    overwritten and, unless --no-prune, stale local YAML files are deleted, so
+    the checkout ends up matching the project exactly). Review the changes with
+    git diff before committing. Exits 0 on success, 2 on usage errors, 3 on
+    transport/API errors.
+    """
+    api_key = _require_api_key(api_key)
+    try:
+        UUID(project_id)
+    except ValueError:
+        typer.secho(f"--project must be a project ID (UUID), got {project_id!r}.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_USAGE)
+    base_path = base_path.strip().strip("/")
+    if not base_path:
+        typer.secho("--base-path must not be empty.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_USAGE)
+
+    try:
+        files = get_ontology_export(api_url=api_url, api_key=api_key, project_id=project_id)
+    except AuthError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_TRANSPORT) from exc
+    except ApiError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_TRANSPORT) from exc
+
+    ontology_dir = (path / Path(base_path)).resolve()
+    written: list[str] = []
+    for rel, content in sorted(files.items()):
+        dest = (ontology_dir / rel).resolve()
+        # The server controls these paths; refuse anything escaping the
+        # ontology dir rather than trusting it blindly.
+        if not dest.is_relative_to(ontology_dir):
+            typer.secho(f"Refusing to write outside {ontology_dir}: {rel!r}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(EXIT_TRANSPORT)
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(content, encoding="utf-8")
+        except OSError as exc:  # local checkout problem (permissions, dir/file collision) — usage, not validation
+            typer.secho(f"Cannot write {dest}: {exc}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(EXIT_USAGE) from exc
+        written.append(rel)
+
+    deleted: list[str] = []
+    if prune and ontology_dir.is_dir():
+        local = _collect_files(ontology_dir)
+        for rel in sorted(set(local) - set(files)):
+            try:
+                (ontology_dir / rel).unlink()
+            except OSError as exc:
+                typer.secho(f"Cannot delete {ontology_dir / rel}: {exc}", fg=typer.colors.RED, err=True)
+                raise typer.Exit(EXIT_USAGE) from exc
+            deleted.append(rel)
+
+    if json_output:
+        typer.echo(json.dumps({"written": written, "deleted": deleted}, indent=2))
+    else:
+        summary = f"✓ Pulled {len(written)} files into {ontology_dir}"
+        if deleted:
+            summary += f" ({len(deleted)} stale files deleted)"
+        typer.secho(f"{summary}.", fg=typer.colors.GREEN)
+    raise typer.Exit(EXIT_OK)
 
 
 @app.command()

@@ -173,7 +173,7 @@ class TestOntologyCheckCommand:
 
     def test_oversized_tree_exits_two_without_network(self, repo, monkeypatch):
         """Trees beyond the server's request ceilings fail fast locally with a clear message."""
-        monkeypatch.setattr("cassis_cli.ontology.MAX_FILES", 1)
+        monkeypatch.setattr("cassis_cli.common.MAX_FILES", 1)
 
         def handler(request):  # any request reaching the network is a test failure
             raise AssertionError("no request should be sent for an oversized tree")

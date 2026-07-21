@@ -126,7 +126,7 @@ class TestOntologyUploadCommand:
         )
 
         assert result.exit_code == 3
-        assert "not found or not accessible" in result.output
+        assert "Check --project" in result.output
 
     def test_invalid_key_exits_three(self, repo, monkeypatch):
         _mock_api(monkeypatch, lambda request: httpx.Response(401, json={"detail": "Invalid or expired API key"}))
