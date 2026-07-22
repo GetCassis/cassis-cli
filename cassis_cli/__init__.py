@@ -1,3 +1,3 @@
 """Cassis CLI — run Cassis actions from your CI pipelines."""
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

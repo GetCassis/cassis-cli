@@ -284,3 +284,39 @@ def post_eval_run_cancel(
         raise _project_scope_error(response)
     if response.status_code >= 400:
         raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
+
+
+def post_ontology_fmt(
+    *,
+    api_url: str,
+    api_key: str,
+    files: dict[str, str],
+    transport: Optional[httpx.BaseTransport] = None,
+) -> dict[str, Any]:
+    """POST the ontology tree to /api/ci/ontology-fmt and return the response body."""
+    url = api_url.rstrip("/") + "/api/ci/ontology-fmt"
+    try:
+        with httpx.Client(timeout=TIMEOUT_SECONDS, transport=transport) as client:
+            response = client.post(
+                url,
+                json={"files": files},
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+    except httpx.HTTPError as exc:
+        raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
+
+    if response.status_code == 401:
+        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+    if response.status_code >= 400:
+        raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
+    result = _parse_json_response(response, url)
+    if (
+        not isinstance(result, dict)
+        or "ok" not in result
+        or not isinstance(result.get("findings"), list)
+        or not isinstance(result.get("changed_paths"), list)
+        or not isinstance(result.get("removed_paths"), list)
+        or (result["ok"] and not isinstance(result.get("files"), dict))
+    ):
+        raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
+    return result

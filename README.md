@@ -3,6 +3,7 @@
 Run Cassis actions from your CI pipelines:
 
 - `cassis ontology check` validates the ontology files in your repository with the exact same checks as the Cassis GitHub PR check (YAML parsing, round-trip, import validation) — so you can gate merges in any CI system, not just GitHub.
+- `cassis ontology fmt` rewrites the ontology files in canonical form (think `black`/`gofmt` for the ontology), so hand or agent edits pass the round-trip check.
 - `cassis ontology upload` uploads the ontology files to a Cassis project (full replace) and, by default, publishes them immediately as a new version — so a merge to your main branch can go live in one CI step.
 - `cassis ontology pull` downloads the project's unpublished ontology into your repository checkout (full sync — stale local YAML files are pruned), so you can start editing from the current state, or bootstrap a repo that isn't git-synced (e.g. Bitbucket).
 - `cassis eval run` runs the project's eval suite against your local ontology files (scored in-memory — nothing is pushed to Cassis) and prints per-question results, so you can test the changes on your git branch before merging.
@@ -74,6 +75,20 @@ with `--branch`, whose runs are labelled with the branch name), `--wait/--no-wai
 and Ctrl-C cancels the run (exit 130). It prints a deep link to the run's page
 in the Evals UI; `--app-url` / `CASSIS_APP_URL` overrides the link's base URL
 when the webapp is not served from the API host (defaults to `--api-url`).
+
+### Formatting
+
+```bash
+# Rewrite the ontology files in canonical form (in place)
+cassis ontology fmt
+
+# CI mode: fail (exit 1) if any file is not canonical, write nothing
+cassis ontology fmt --check
+```
+
+`fmt` uses the exact serializer the validation round-trip compares against, so a formatted tree cannot fail that stage. Formatting does not run import validation — `check` remains the pass/fail gate for semantic problems (dangling references, incomplete metrics).
+
+**Review the diff before committing**: canonical form keeps exactly the fields Cassis understands. Unknown fields (typos) are dropped — the rewrite makes them visible in `git diff` instead of losing them silently at sync time. Files with duplicate YAML keys are rejected (fix them by hand: the formatter can't know which value you meant).
 
 ### Exit codes
 

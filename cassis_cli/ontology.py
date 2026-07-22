@@ -15,6 +15,7 @@ from cassis_cli.api import (
     UploadValidationError,
     get_ontology_export,
     post_ontology_check,
+    post_ontology_fmt,
     post_ontology_import,
 )
 from cassis_cli.common import (
@@ -280,4 +281,94 @@ def upload(
                 f"✓ Ontology uploaded ({counts}). Not published — it is now the project's unpublished ontology.",
                 fg=typer.colors.GREEN,
             )
+    raise typer.Exit(EXIT_OK)
+
+
+@app.command()
+def fmt(
+    path: Path = typer.Argument(
+        Path("."),
+        help="Repository checkout root (the directory containing the ontology export path).",
+    ),
+    api_key: Optional[str] = typer.Option(
+        None,
+        "--api-key",
+        envvar="CASSIS_API_KEY",
+        help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+    ),
+    api_url: str = typer.Option(
+        DEFAULT_API_URL,
+        "--api-url",
+        envvar="CASSIS_API_URL",
+        help="Cassis API base URL.",
+    ),
+    base_path: str = typer.Option(
+        DEFAULT_BASE_PATH,
+        "--base-path",
+        envvar="CASSIS_BASE_PATH",
+        help="Repository directory the ontology is exported under (the project's git-sync Path setting).",
+    ),
+    check_only: bool = typer.Option(
+        False,
+        "--check",
+        help="Do not write anything; exit 1 if any file would change.",
+    ),
+) -> None:
+    """Rewrite the ontology files in canonical form (think `black` for the ontology).
+
+    Uses the exact serializer the validation round-trip compares against, so a
+    formatted tree cannot fail that stage of `cassis ontology check` or the
+    GitHub PR check. Unknown fields are dropped by canonicalization — review
+    the diff before committing; duplicate YAML keys are rejected (the
+    formatter cannot know which value was intended). Exits 0 on success
+    (1 with --check when changes are needed), 1 when the tree cannot be
+    parsed, 2 on usage errors, 3 on transport/API errors.
+    """
+    api_key = _require_api_key(api_key)
+    files, base_path = _collect_tree(path, base_path)
+    ontology_dir = path / Path(base_path)
+
+    try:
+        result = post_ontology_fmt(api_url=api_url, api_key=api_key, files=files)
+    except AuthError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_TRANSPORT) from exc
+    except ApiError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_TRANSPORT) from exc
+
+    if not result["ok"]:
+        typer.secho("Cannot format: the tree does not parse.", fg=typer.colors.RED, bold=True, err=True)
+        for finding in result["findings"]:
+            location = f"{base_path}/{finding.get('path')}: " if finding.get("path") else ""
+            typer.echo(f"  {location}{finding.get('message', '')}", err=True)
+        raise typer.Exit(EXIT_VALIDATION_FAILED)
+
+    changed = result["changed_paths"]
+    removed = result["removed_paths"]
+    if not changed and not removed:
+        typer.secho(f"✓ {len(files)} file(s) already canonical.", fg=typer.colors.GREEN)
+        raise typer.Exit(EXIT_OK)
+
+    if check_only:
+        for p in changed:
+            typer.echo(f"would rewrite {base_path}/{p}")
+        for p in removed:
+            typer.echo(f"would remove {base_path}/{p}")
+        raise typer.Exit(EXIT_VALIDATION_FAILED)
+
+    for p in changed:
+        target = ontology_dir / p
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(result["files"][p], encoding="utf-8")
+        typer.echo(f"rewrote {base_path}/{p}")
+    for p in removed:
+        (ontology_dir / p).unlink(missing_ok=True)
+        typer.echo(f"removed {base_path}/{p}")
+    typer.secho(
+        f"Formatted {len(changed)} file(s)"
+        + (f", removed {len(removed)}" if removed else "")
+        + ". Review the diff: fields Cassis does not recognize are dropped.",
+        fg=typer.colors.YELLOW,
+    )
     raise typer.Exit(EXIT_OK)
