@@ -14,11 +14,18 @@ _CANONICAL = "schema_name: public\ntable_name: orders\n"
 
 @pytest.fixture
 def repo(tmp_path):
-    """A fake checkout whose orders.yml is valid but non-canonical (key order)."""
+    """A fake checkout whose orders.yml is valid but non-canonical (key order).
+
+    Seeds a current AGENTS.md so the YAML-focused tests below aren't perturbed
+    by the managed-guide refresh (that behavior has its own tests).
+    """
+    from cassis_cli.guide import refresh_guide
+
     ontology_dir = tmp_path / "cassis"
     (ontology_dir / "tables" / "public").mkdir(parents=True)
     (ontology_dir / "_project.yml").write_text("display_name: Test\n")
     (ontology_dir / "tables" / "public" / "orders.yml").write_text(_NON_CANONICAL)
+    refresh_guide(ontology_dir)
     return tmp_path
 
 
@@ -134,6 +141,76 @@ def test_fmt_unparseable_tree_exits_1(repo, monkeypatch):
 def test_fmt_requires_api_key(repo):
     result = runner.invoke(app, ["ontology", "fmt", str(repo)], env={"CASSIS_API_KEY": ""})
     assert result.exit_code == 2
+
+
+def _canonical_yaml_handler(request):
+    """Server reports the YAML tree already canonical (no changes/removals)."""
+    body = json.loads(request.content)
+    return httpx.Response(
+        200,
+        json={"ok": True, "files": body["files"], "changed_paths": [], "removed_paths": [], "findings": []},
+    )
+
+
+def test_fmt_writes_missing_guide_even_when_yaml_canonical(tmp_path, monkeypatch):
+    from cassis_cli.guide import canonical_guide
+
+    ontology_dir = tmp_path / "cassis"
+    (ontology_dir / "tables" / "public").mkdir(parents=True)
+    (ontology_dir / "_project.yml").write_text("display_name: Test\n")
+    (ontology_dir / "tables" / "public" / "orders.yml").write_text(_CANONICAL)
+    # No AGENTS.md seeded → fmt should create it despite the YAML being canonical.
+    _mock_api(monkeypatch, _canonical_yaml_handler)
+
+    result = runner.invoke(app, ["ontology", "fmt", str(tmp_path), "--api-key", "sk-k6-test"])
+
+    assert result.exit_code == 0, result.output
+    assert "cassis/AGENTS.md" in result.output
+    assert (ontology_dir / "AGENTS.md").read_text(encoding="utf-8") == canonical_guide()
+
+
+def test_fmt_check_flags_stale_guide(tmp_path, monkeypatch):
+    ontology_dir = tmp_path / "cassis"
+    (ontology_dir / "tables" / "public").mkdir(parents=True)
+    (ontology_dir / "_project.yml").write_text("display_name: Test\n")
+    (ontology_dir / "tables" / "public" / "orders.yml").write_text(_CANONICAL)
+    (ontology_dir / "AGENTS.md").write_text("stale hand-edited guide\n", encoding="utf-8")
+    _mock_api(monkeypatch, _canonical_yaml_handler)
+
+    result = runner.invoke(app, ["ontology", "fmt", str(tmp_path), "--api-key", "sk-k6-test", "--check"])
+
+    assert result.exit_code == 1
+    assert "would rewrite cassis/AGENTS.md" in result.output
+    # --check writes nothing.
+    assert (ontology_dir / "AGENTS.md").read_text(encoding="utf-8") == "stale hand-edited guide\n"
+
+
+def test_fmt_leaves_newer_doctrine_guide_alone(tmp_path, monkeypatch):
+    """A guide stamped with a newer doctrine passes --check and is never rewritten.
+
+    The repo is fine — the CLI is old. fmt must not downgrade the file (write
+    mode) nor go red on it (--check in CI would otherwise block every repo the
+    moment the server writes a newer guide than the pinned CLI carries).
+    """
+    import re as _re
+
+    from cassis_cli.guide import DOCTRINE_VERSION, canonical_guide
+
+    ontology_dir = tmp_path / "cassis"
+    (ontology_dir / "tables" / "public").mkdir(parents=True)
+    (ontology_dir / "_project.yml").write_text("display_name: Test\n")
+    (ontology_dir / "tables" / "public" / "orders.yml").write_text(_CANONICAL)
+    newer = _re.sub(r"doctrine v\d+", f"doctrine v{DOCTRINE_VERSION + 1}", canonical_guide())
+    (ontology_dir / "AGENTS.md").write_text(newer, encoding="utf-8")
+    _mock_api(monkeypatch, _canonical_yaml_handler)
+
+    check = runner.invoke(app, ["ontology", "fmt", str(tmp_path), "--api-key", "sk-k6-test", "--check"])
+    assert check.exit_code == 0, check.output
+    assert "newer Cassis doctrine" in check.output
+
+    write = runner.invoke(app, ["ontology", "fmt", str(tmp_path), "--api-key", "sk-k6-test"])
+    assert write.exit_code == 0, write.output
+    assert (ontology_dir / "AGENTS.md").read_text(encoding="utf-8") == newer
 
 
 @pytest.mark.parametrize(

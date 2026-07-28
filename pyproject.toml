@@ -1,6 +1,6 @@
 [project]
 name = "cassis-cli"
-version = "0.4.0"
+version = "1.0.0"
 description = "Cassis CLI — run Cassis actions (ontology validation, upload and publish) from your CI pipelines"
 readme = "README.md"
 license = { text = "Proprietary" }
@@ -19,6 +19,9 @@ cassis = "cassis_cli.main:app"
 
 [tool.poetry]
 packages = [{ include = "cassis_cli" }]
+# Ship the bundled modeling guide (non-.py data) in the wheel/sdist — the CLI
+# reads it at runtime to write <base_path>/AGENTS.md.
+include = [{ path = "cassis_cli/ontology_design_guide.md", format = ["sdist", "wheel"] }]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.0.0"

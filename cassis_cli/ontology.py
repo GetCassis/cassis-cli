@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 from uuid import UUID
 
 import typer
@@ -12,11 +12,13 @@ from cassis_cli.api import (
     DEFAULT_API_URL,
     ApiError,
     AuthError,
+    OntologyTestValidationError,
     UploadValidationError,
     get_ontology_export,
     post_ontology_check,
     post_ontology_fmt,
     post_ontology_import,
+    post_ontology_test,
 )
 from cassis_cli.common import (
     DEFAULT_BASE_PATH,
@@ -28,8 +30,23 @@ from cassis_cli.common import (
 from cassis_cli.common import collect_files as _collect_files
 from cassis_cli.common import collect_tree as _collect_tree
 from cassis_cli.common import require_api_key as _require_api_key
+from cassis_cli.guide import DOCTRINE_VERSION, GUIDE_FILENAME, guide_status, refresh_guide
 
 app = typer.Typer(no_args_is_help=True, help="Ontology commands.")
+
+
+def _warn_newer_guide(base_path: str) -> None:
+    """Tell the user their checkout's AGENTS.md outruns this CLI's doctrine.
+
+    A newer-stamped guide (written by a newer CLI or by the Cassis server) is
+    never overwritten — the fix is upgrading the CLI, so say so and move on.
+    """
+    typer.secho(
+        f"notice: {base_path}/{GUIDE_FILENAME} carries a newer Cassis doctrine than this CLI "
+        f"(v{DOCTRINE_VERSION}) — leaving it in place; run `pip install -U cassis-cli` to update.",
+        fg=typer.colors.YELLOW,
+        err=True,
+    )
 
 
 @app.command()
@@ -183,12 +200,26 @@ def pull(
                 raise typer.Exit(EXIT_USAGE) from exc
             deleted.append(rel)
 
+    # Managed modeling guide: refresh AGENTS.md so a repo-aware agent loads
+    # current Cassis doctrine. Not part of the ontology tree (YAML-only), so it
+    # was neither pulled above nor pruned.
+    try:
+        guide_state = refresh_guide(ontology_dir)
+    except OSError as exc:
+        typer.secho(f"Cannot write {ontology_dir / GUIDE_FILENAME}: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_USAGE) from exc
+    guide_written = guide_state in ("stale", "missing")
+    if guide_state == "newer":
+        _warn_newer_guide(base_path)
+
     if json_output:
-        typer.echo(json.dumps({"written": written, "deleted": deleted}, indent=2))
+        typer.echo(json.dumps({"written": written, "deleted": deleted, "guide_written": guide_written}, indent=2))
     else:
         summary = f"✓ Pulled {len(written)} files into {ontology_dir}"
         if deleted:
             summary += f" ({len(deleted)} stale files deleted)"
+        if guide_written:
+            summary += f"; wrote {base_path}/{GUIDE_FILENAME}"
         typer.secho(f"{summary}.", fg=typer.colors.GREEN)
     raise typer.Exit(EXIT_OK)
 
@@ -346,7 +377,16 @@ def fmt(
 
     changed = result["changed_paths"]
     removed = result["removed_paths"]
-    if not changed and not removed:
+    # The managed AGENTS.md guide is canonicalized alongside the YAML tree
+    # (it isn't in the tree, so the server round-trip above never sees it).
+    # A guide stamped with a NEWER doctrine than this CLI carries is left
+    # alone and does not fail --check: the repo is fine, the CLI is old.
+    guide_state = guide_status(ontology_dir)
+    guide_stale = guide_state in ("stale", "missing")
+    if guide_state == "newer":
+        _warn_newer_guide(base_path)
+
+    if not changed and not removed and not guide_stale:
         typer.secho(f"✓ {len(files)} file(s) already canonical.", fg=typer.colors.GREEN)
         raise typer.Exit(EXIT_OK)
 
@@ -355,6 +395,8 @@ def fmt(
             typer.echo(f"would rewrite {base_path}/{p}")
         for p in removed:
             typer.echo(f"would remove {base_path}/{p}")
+        if guide_stale:
+            typer.echo(f"would rewrite {base_path}/{GUIDE_FILENAME}")
         raise typer.Exit(EXIT_VALIDATION_FAILED)
 
     for p in changed:
@@ -365,10 +407,160 @@ def fmt(
     for p in removed:
         (ontology_dir / p).unlink(missing_ok=True)
         typer.echo(f"removed {base_path}/{p}")
-    typer.secho(
-        f"Formatted {len(changed)} file(s)"
-        + (f", removed {len(removed)}" if removed else "")
-        + ". Review the diff: fields Cassis does not recognize are dropped.",
-        fg=typer.colors.YELLOW,
-    )
+    if guide_stale:
+        try:
+            refresh_guide(ontology_dir)
+        except OSError as exc:
+            typer.secho(f"Cannot write {ontology_dir / GUIDE_FILENAME}: {exc}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(EXIT_USAGE) from exc
+        typer.echo(f"rewrote {base_path}/{GUIDE_FILENAME}")
+
+    if changed or removed:
+        typer.secho(
+            f"Formatted {len(changed)} file(s)"
+            + (f", removed {len(removed)}" if removed else "")
+            + ". Review the diff: fields Cassis does not recognize are dropped.",
+            fg=typer.colors.YELLOW,
+        )
+    else:
+        # Only the guide was refreshed — the "rewrote ..." line above already said so.
+        typer.secho(f"✓ {len(files)} file(s) already canonical.", fg=typer.colors.GREEN)
     raise typer.Exit(EXIT_OK)
+
+
+@app.command()
+def test(
+    path: Path = typer.Argument(
+        Path("."),
+        help="Repository checkout root (the directory containing the ontology export path).",
+    ),
+    question: List[str] = typer.Option(
+        ...,
+        "--question",
+        "-q",
+        help="Natural-language question to probe (repeat for several).",
+    ),
+    project_id: str = typer.Option(
+        ...,
+        "--project",
+        envvar="CASSIS_PROJECT_ID",
+        help="Target Cassis project ID (UUID, shown in the project's URL).",
+    ),
+    api_key: Optional[str] = typer.Option(
+        None,
+        "--api-key",
+        envvar="CASSIS_API_KEY",
+        help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+    ),
+    api_url: str = typer.Option(
+        DEFAULT_API_URL,
+        "--api-url",
+        envvar="CASSIS_API_URL",
+        help="Cassis API base URL.",
+    ),
+    base_path: str = typer.Option(
+        DEFAULT_BASE_PATH,
+        "--base-path",
+        envvar="CASSIS_BASE_PATH",
+        help="Repository directory the ontology is exported under (the project's git-sync Path setting).",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print the raw JSON outcomes."),
+) -> None:
+    """Run questions through the text-to-SQL agent using your local ontology files.
+
+    The behavioral probe: checks that a change actually WORKS — e.g. that a
+    new column gets picked —
+    where `cassis eval run` only checks for regressions on existing gold
+    cases. Each question is one full agent run (expect ~30-90s each); nothing
+    is persisted server-side. The outcome is informational, not a gate: read
+    the SQL and answer, don't wire the exit code into CI verdicts. Exits 0
+    when every probe completed (whatever its outcome), 1 when the tree is
+    invalid or a probe failed, 2 on usage errors, 3 on transport errors.
+    """
+    api_key = _require_api_key(api_key)
+    try:
+        UUID(project_id)
+    except ValueError:
+        typer.secho(f"--project must be a project ID (UUID), got {project_id!r}.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_USAGE)
+    files, base_path = _collect_tree(path, base_path)
+
+    outcomes: "list[dict]" = []
+    failed = False
+    for q in question:
+        try:
+            outcome = post_ontology_test(
+                api_url=api_url, api_key=api_key, project_id=project_id, files=files, question=q
+            )
+        except OntologyTestValidationError as exc:
+            _print_test_validation_failure(exc.detail, base_path)
+            raise typer.Exit(EXIT_VALIDATION_FAILED) from exc
+        except AuthError as exc:
+            typer.secho(str(exc), fg=typer.colors.RED, err=True)
+            raise typer.Exit(EXIT_TRANSPORT) from exc
+        except ApiError as exc:
+            typer.secho(str(exc), fg=typer.colors.RED, err=True)
+            raise typer.Exit(EXIT_TRANSPORT) from exc
+        outcomes.append(outcome)
+        if not json_output:
+            _print_test_outcome(q, outcome)
+        if outcome.get("status") != "completed":
+            failed = True
+
+    if json_output:
+        # Always a list, regardless of how many questions ran — scripts
+        # shouldn't have to branch on the shape.
+        typer.echo(json.dumps(outcomes, indent=2))
+    raise typer.Exit(EXIT_VALIDATION_FAILED if failed else EXIT_OK)
+
+
+def _print_test_validation_failure(detail: object, base_path: str) -> None:
+    """Print a structured 400 from the test endpoint (invalid tree findings, or a plain message)."""
+    if isinstance(detail, dict) and isinstance(detail.get("findings"), list):
+        typer.secho("Ontology validation failed:", fg=typer.colors.RED, bold=True, err=True)
+        message = detail.get("message")
+        if message:
+            typer.echo(message, err=True)
+        for finding in detail["findings"]:
+            location = f"{base_path}/{finding.get('path')}: " if finding.get("path") else ""
+            typer.echo(f"  {location}{finding.get('message', '')} ({finding.get('stage', '?')})", err=True)
+    else:
+        typer.secho(str(detail), fg=typer.colors.RED, err=True)
+
+
+_TEST_RESULT_ROWS_SHOWN = 10
+
+
+def _print_test_outcome(question: str, outcome: "dict") -> None:
+    typer.secho(f"▶ {question}", bold=True)
+    if outcome.get("status") != "completed":
+        typer.secho(f"  probe failed: {outcome.get('error', 'unknown error')}", fg=typer.colors.RED)
+        if outcome.get("generated_sql"):
+            typer.echo(f"  SQL before failure:\n{_indent(outcome['generated_sql'])}")
+        return
+    run_status = outcome.get("run_status", "?")
+    color = typer.colors.GREEN if run_status == "success" else typer.colors.YELLOW
+    duration = f" ({outcome['duration_seconds']:.0f}s)" if outcome.get("duration_seconds") is not None else ""
+    typer.secho(f"  {run_status}{duration}", fg=color)
+    if outcome.get("generated_sql"):
+        typer.echo(_indent(outcome["generated_sql"]))
+    if outcome.get("answer"):
+        typer.echo(f"  Answer: {outcome['answer']}")
+    results = outcome.get("results")
+    # None means the SQL was never executed (schema-only source); an empty
+    # list means the query ran and returned nothing — show the distinction.
+    if results is not None:
+        total = outcome.get("total_rows", len(results))
+        typer.echo(f"  Results ({total} row{'s' if total != 1 else ''}):")
+        for row in results[:_TEST_RESULT_ROWS_SHOWN]:
+            typer.echo(f"    {row}")
+        if len(results) > _TEST_RESULT_ROWS_SHOWN or outcome.get("truncated"):
+            typer.echo("    ...")
+    for concept in outcome.get("missing_concepts") or []:
+        typer.secho(f"  missing concept: {concept}", fg=typer.colors.YELLOW)
+    for warning in outcome.get("warnings") or []:
+        typer.secho(f"  warning: {warning}", fg=typer.colors.YELLOW)
+
+
+def _indent(text: str) -> str:
+    return "\n".join(f"    {line}" for line in text.splitlines())

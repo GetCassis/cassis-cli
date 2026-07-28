@@ -46,6 +46,33 @@ class TestOntologyPullCommand:
         assert (tmp_path / "cassis" / "tables" / "public" / "orders.yml").exists()
         assert "Pulled 2 files" in result.output
 
+    def test_pull_writes_managed_guide(self, tmp_path, monkeypatch):
+        from cassis_cli.guide import canonical_guide
+
+        _mock_api(monkeypatch, _export_handler)
+
+        result = runner.invoke(
+            app, ["ontology", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
+        )
+
+        assert result.exit_code == 0, result.output
+        guide = tmp_path / "cassis" / "AGENTS.md"
+        assert guide.read_text(encoding="utf-8") == canonical_guide()
+        assert "cassis/AGENTS.md" in result.output
+
+    def test_pull_does_not_prune_managed_guide(self, tmp_path, monkeypatch):
+        # AGENTS.md lives under cassis/ but is not a YAML tree file, so a pull
+        # that syncs the tree must leave it in place, not prune it.
+        _mock_api(monkeypatch, _export_handler)
+
+        runner.invoke(app, ["ontology", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"])
+        result = runner.invoke(
+            app, ["ontology", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert (tmp_path / "cassis" / "AGENTS.md").exists()
+
     def test_pull_prunes_stale_yaml(self, tmp_path, monkeypatch):
         stale = tmp_path / "cassis" / "tables" / "public" / "old_table.yml"
         stale.parent.mkdir(parents=True)

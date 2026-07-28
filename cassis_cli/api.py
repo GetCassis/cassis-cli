@@ -2,12 +2,72 @@
 
 from __future__ import annotations
 
+import sys
 from typing import Any, Optional
 
 import httpx
+from cassis_cli import __version__
 
 DEFAULT_API_URL = "https://app.getcassis.com"
 TIMEOUT_SECONDS = 60.0
+
+USER_AGENT = f"cassis-cli/{__version__}"
+
+# Response header the CI endpoints set to the newest cassis-cli on PyPI.
+LATEST_VERSION_HEADER = "x-cassis-cli-latest"
+
+_upgrade_notice_shown = False
+
+
+def _version_tuple(version: str) -> Optional[tuple[int, ...]]:
+    try:
+        return tuple(int(part) for part in version.strip().split("."))
+    except ValueError:
+        return None
+
+
+def _maybe_print_upgrade_notice(response: httpx.Response) -> None:
+    """Print a one-time stderr notice when the server advertises a newer CLI.
+
+    Purely informational — never changes behavior or exit codes. Staying
+    current matters beyond bugfixes: the ontology modeling guide written to
+    ``cassis/AGENTS.md`` ships inside this package, so an old CLI keeps old
+    doctrine in the repo.
+    """
+    global _upgrade_notice_shown
+    if _upgrade_notice_shown:
+        return
+    latest = response.headers.get(LATEST_VERSION_HEADER)
+    if not latest:
+        return
+    mine, theirs = _version_tuple(__version__), _version_tuple(latest)
+    if mine is None or theirs is None:
+        return
+    # Zero-pad to equal length so "0.6" == "0.6.0" (same rule as the webapp's
+    # Agent setup page — the comparison logic exists on both surfaces).
+    width = max(len(mine), len(theirs))
+    if theirs + (0,) * (width - len(theirs)) <= mine + (0,) * (width - len(mine)):
+        return
+    _upgrade_notice_shown = True
+    print(
+        f"notice: cassis-cli {latest} is available (you have {__version__}) — "
+        "run `pip install -U cassis-cli`, then `cassis ontology fmt` to refresh cassis/AGENTS.md.",
+        file=sys.stderr,
+    )
+
+
+def _client(*, timeout: float = TIMEOUT_SECONDS, transport: Optional[httpx.BaseTransport] = None) -> httpx.Client:
+    """Build the HTTP client every API call goes through.
+
+    Identifies the CLI to the server (User-Agent) and watches responses for
+    the newer-version advertisement.
+    """
+    return httpx.Client(
+        timeout=timeout,
+        transport=transport,
+        headers={"User-Agent": USER_AGENT},
+        event_hooks={"response": [_maybe_print_upgrade_notice]},
+    )
 
 
 class ApiError(Exception):
@@ -52,6 +112,14 @@ def _project_scope_error(response: httpx.Response) -> ApiError:
     )
 
 
+def _detail_or_text(response: httpx.Response) -> Any:
+    """Return the error response's ``detail`` (str or structured), falling back to its body."""
+    try:
+        return response.json().get("detail") or response.text[:500]
+    except ValueError:
+        return response.text[:500]
+
+
 def _parse_json_response(response: httpx.Response, url: str) -> Any:
     try:
         return response.json()
@@ -71,7 +139,7 @@ def post_ontology_check(
     """POST the ontology tree to /api/ci/ontology-check and return the response body."""
     url = api_url.rstrip("/") + "/api/ci/ontology-check"
     try:
-        with httpx.Client(timeout=TIMEOUT_SECONDS, transport=transport) as client:
+        with _client(transport=transport) as client:
             response = client.post(
                 url,
                 json={"files": files},
@@ -110,7 +178,7 @@ def post_ontology_import(
     if label is not None:
         body["label"] = label
     try:
-        with httpx.Client(timeout=TIMEOUT_SECONDS, transport=transport) as client:
+        with _client(transport=transport) as client:
             response = client.post(
                 url,
                 json=body,
@@ -122,11 +190,7 @@ def post_ontology_import(
     if response.status_code == 401:
         raise AuthError("The Cassis API rejected the API key (invalid or expired).")
     if response.status_code == 400:
-        try:
-            detail = response.json().get("detail") or response.text[:500]
-        except ValueError:
-            detail = response.text[:500]
-        raise UploadValidationError(str(detail))
+        raise UploadValidationError(str(_detail_or_text(response)))
     if response.status_code in (403, 404):
         raise _project_scope_error(response)
     if response.status_code >= 400:
@@ -149,7 +213,7 @@ def get_ontology_export(
     """GET /api/ci/projects/{project_id}/ontology/export and return the files tree."""
     url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/ontology/export"
     try:
-        with httpx.Client(timeout=TIMEOUT_SECONDS, transport=transport) as client:
+        with _client(transport=transport) as client:
             response = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
@@ -186,7 +250,7 @@ def post_eval_run_start(
     if label is not None:
         body["label"] = label
     try:
-        with httpx.Client(timeout=TIMEOUT_SECONDS, transport=transport) as client:
+        with _client(transport=transport) as client:
             response = client.post(url, json=body, headers={"Authorization": f"Bearer {api_key}"})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
@@ -194,11 +258,7 @@ def post_eval_run_start(
     if response.status_code == 401:
         raise AuthError("The Cassis API rejected the API key (invalid or expired).")
     if response.status_code == 400:
-        try:
-            detail = response.json().get("detail") or response.text[:500]
-        except ValueError:
-            detail = response.text[:500]
-        raise EvalStartValidationError(detail)
+        raise EvalStartValidationError(_detail_or_text(response))
     if response.status_code == 409:
         raise EvalRunActiveError(
             "An eval run is already active for this project — wait for it to finish or cancel it "
@@ -214,10 +274,55 @@ def post_eval_run_start(
     return result
 
 
+class EvalCaseExistsError(ApiError):
+    """The project already has an eval case with this exact question."""
+
+
+class EvalCaseGoldSqlError(ApiError):
+    """The API rejected the gold SQL (400): it does not run against the project's data source."""
+
+
+def post_eval_case_create(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    question: str,
+    gold_sql: str,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> dict[str, Any]:
+    """POST to /api/ci/projects/{project_id}/eval/cases and return the created case."""
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/eval/cases"
+    try:
+        with _client(transport=transport) as client:
+            response = client.post(
+                url,
+                json={"question": question, "gold_sql": gold_sql},
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+    except httpx.HTTPError as exc:
+        raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
+
+    if response.status_code == 401:
+        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+    if response.status_code == 409:
+        raise EvalCaseExistsError(str(_detail_or_text(response)))
+    if response.status_code == 400:
+        raise EvalCaseGoldSqlError(str(_detail_or_text(response)))
+    if response.status_code in (403, 404):
+        raise _project_scope_error(response)
+    if response.status_code >= 400:
+        raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
+    result = _parse_json_response(response, url)
+    if not isinstance(result, dict) or not all(key in result for key in ("id", "question", "gold_sql")):
+        raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
+    return result
+
+
 def _get_eval_json(url: str, api_key: str, transport: Optional[httpx.BaseTransport]) -> Any:
     """GET an eval-run URL with the shared error mapping."""
     try:
-        with httpx.Client(timeout=TIMEOUT_SECONDS, transport=transport) as client:
+        with _client(transport=transport) as client:
             response = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
@@ -274,7 +379,7 @@ def post_eval_run_cancel(
     """POST /api/ci/projects/{project_id}/eval/runs/{run_id}/cancel."""
     url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/eval/runs/{run_id}/cancel"
     try:
-        with httpx.Client(timeout=TIMEOUT_SECONDS, transport=transport) as client:
+        with _client(transport=transport) as client:
             response = client.post(url, headers={"Authorization": f"Bearer {api_key}"})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
@@ -296,7 +401,7 @@ def post_ontology_fmt(
     """POST the ontology tree to /api/ci/ontology-fmt and return the response body."""
     url = api_url.rstrip("/") + "/api/ci/ontology-fmt"
     try:
-        with httpx.Client(timeout=TIMEOUT_SECONDS, transport=transport) as client:
+        with _client(transport=transport) as client:
             response = client.post(
                 url,
                 json={"files": files},
@@ -318,5 +423,61 @@ def post_ontology_fmt(
         or not isinstance(result.get("removed_paths"), list)
         or (result["ok"] and not isinstance(result.get("files"), dict))
     ):
+        raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
+    return result
+
+
+# The server-side probe budget is 300s; leave headroom for transport.
+ONTOLOGY_TEST_TIMEOUT_SECONDS = 330.0
+
+
+class OntologyTestValidationError(ApiError):
+    """The API rejected the ontology tree as invalid (400).
+
+    ``detail`` keeps the structured payload (``{"message", "findings"}``) for
+    display.
+    """
+
+    def __init__(self, detail: object) -> None:
+        super().__init__(str(detail))
+        self.detail = detail
+
+
+def post_ontology_test(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    files: dict[str, str],
+    question: str,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> dict[str, Any]:
+    """POST to /api/ci/projects/{project_id}/ontology/test and return the probe outcome.
+
+    Blocks for the duration of the agent run (up to ~5 minutes server-side).
+    """
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/ontology/test"
+    try:
+        with _client(timeout=ONTOLOGY_TEST_TIMEOUT_SECONDS, transport=transport) as client:
+            response = client.post(
+                url,
+                json={"files": files, "question": question},
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+    except httpx.HTTPError as exc:
+        raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
+
+    if response.status_code == 401:
+        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+    if response.status_code == 400:
+        raise OntologyTestValidationError(_detail_or_text(response))
+    if response.status_code == 402:
+        raise ApiError("Your organization has run out of credits. Contact your administrator to top up.")
+    if response.status_code in (403, 404):
+        raise _project_scope_error(response)
+    if response.status_code >= 400:
+        raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
+    result = _parse_json_response(response, url)
+    if not isinstance(result, dict) or "status" not in result:
         raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
     return result

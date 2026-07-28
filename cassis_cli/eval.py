@@ -15,10 +15,13 @@ from cassis_cli.api import (
     DEFAULT_API_URL,
     ApiError,
     AuthError,
+    EvalCaseExistsError,
+    EvalCaseGoldSqlError,
     EvalRunActiveError,
     EvalStartValidationError,
     get_eval_run,
     get_eval_run_results,
+    post_eval_case_create,
     post_eval_run_cancel,
     post_eval_run_start,
 )
@@ -137,6 +140,79 @@ def _print_summary(run: dict[str, Any]) -> None:
     if timing.get("p50") is not None:
         parts.append(f"p50 {timing['p50']:.0f}s")
     typer.echo(", ".join(parts))
+
+
+@app.command(name="add-case")
+def add_case(
+    project_id: str = typer.Option(
+        ...,
+        "--project",
+        envvar="CASSIS_PROJECT_ID",
+        help="Target Cassis project ID (UUID, shown in the project's URL).",
+    ),
+    question: str = typer.Option(
+        ...,
+        "-q",
+        "--question",
+        help="The natural-language question the case guards.",
+    ),
+    gold_sql: str = typer.Option(
+        ...,
+        "--gold-sql",
+        help="The correct SQL for the question; executed at run time to produce the expected output.",
+    ),
+    api_key: Optional[str] = typer.Option(
+        None,
+        "--api-key",
+        envvar="CASSIS_API_KEY",
+        help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+    ),
+    api_url: str = typer.Option(
+        DEFAULT_API_URL,
+        "--api-url",
+        envvar="CASSIS_API_URL",
+        help="Cassis API base URL.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print the created case as raw JSON."),
+) -> None:
+    """Add a gold test case to the project's eval suite.
+
+    Closes the loop after fixing an ontology issue: the question users were
+    failing on becomes a gold case, so `cassis eval run` guards it from
+    regressing. On an executable data source the gold SQL is run before the
+    case is stored, so a case that cannot execute never enters the suite.
+    Exits 0 on creation, 1 on a duplicate question or gold SQL that does not
+    run, 2 on usage errors, 3 on transport/API errors.
+    """
+    api_key = require_api_key(api_key)
+    try:
+        UUID(project_id)
+    except ValueError:
+        typer.secho(f"--project must be a project ID (UUID), got {project_id!r}.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_USAGE)
+    if not question.strip() or not gold_sql.strip():
+        typer.secho("--question and --gold-sql must not be empty.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_USAGE)
+
+    try:
+        case = post_eval_case_create(
+            api_url=api_url, api_key=api_key, project_id=project_id, question=question, gold_sql=gold_sql
+        )
+    except (EvalCaseExistsError, EvalCaseGoldSqlError) as exc:
+        typer.secho(str(exc), fg=typer.colors.YELLOW, err=True)
+        raise typer.Exit(EXIT_VALIDATION_FAILED) from exc
+    except AuthError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_TRANSPORT) from exc
+    except ApiError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_TRANSPORT) from exc
+
+    if json_output:
+        typer.echo(json.dumps(case, indent=2))
+    else:
+        typer.secho(f"✓ Added eval case {case['id']}: {case['question']}", fg=typer.colors.GREEN)
+    raise typer.Exit(EXIT_OK)
 
 
 @app.command()
