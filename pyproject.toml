@@ -1,11 +1,17 @@
 [project]
 name = "cassis-cli"
-version = "1.1.0"
+version = "1.1.1"
 description = "Cassis CLI — run Cassis actions (ontology validation, upload and publish) from your CI pipelines"
 readme = "README.md"
-license = { text = "Proprietary" }
+license = { text = "Apache-2.0" }
 authors = [{ name = "Cassis", email = "tech.admin@getcassis.com" }]
 keywords = ["cassis", "ontology", "ci", "text-to-sql"]
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Topic :: Database",
+]
 # Customer CI images — keep this floor low and the code 3.10-compatible,
 # regardless of the monorepo's own Python pin.
 requires-python = ">=3.10,<4.0"
@@ -13,6 +19,11 @@ dependencies = [
     "typer (>=0.12,<1.0)",
     "httpx (>=0.24,<1.0)",
 ]
+
+[project.urls]
+Homepage = "https://getcassis.com"
+Repository = "https://github.com/GetCassis/cassis-cli"
+Documentation = "https://github.com/GetCassis/cassis-cli#readme"
 
 [project.scripts]
 cassis = "cassis_cli.main:app"

@@ -386,7 +386,31 @@ description, so a wrong example is worse than none.
 
 ---
 
-## 12. Working in a git-synced repo
+## 12. Extension passes: structure before content
+
+Adding a source or a whole subject area inverts the scoping bullet above. §11 is
+written for maintenance edits, where a structural change is genuinely adjacent;
+on an extension pass the tree *is* the change — every table and metric names a
+`domain_path`, so content filled into a hierarchy you already doubt all has to
+move. Same human opt-in, front-loaded:
+
+1. **Scope.** Agree what is being added, from which sources, in what order.
+2. **Structure.** Evaluate the existing hierarchy against what is arriving and
+   propose the tree changes — new domains, splits, moves — for approval *before*
+   any content. On approval, create the new domain files frontmatter-only (empty
+   body), so every `domain_path` resolves while you fill.
+3. **Fill bottom-up.** Column and table facts, then metrics and joins, then each
+   domain README body last, written from what is left over. That residue is by
+   construction the cross-table connective tissue domain level owns, so the order
+   enforces the one-home rule instead of leaving it to vigilance. Bottom-up is an
+   authoring order, not a holding rule: a fact learned out of order still lands at
+   its owning layer immediately (§11). If filling shows the approved tree is wrong
+   — a domain overloads, or wants to split — stop and return to 2 rather than keep
+   filling into it.
+
+---
+
+## 13. Working in a git-synced repo
 
 The repository is the source of truth. Edit the files, then verify before opening
 a pull request — the CLI runs the same checks the platform does, from your

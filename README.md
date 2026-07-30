@@ -211,3 +211,18 @@ ontology-publish:
     CASSIS_API_KEY: $CASSIS_API_KEY
     CASSIS_PROJECT_ID: $CASSIS_PROJECT_ID
 ```
+
+## About this repository
+
+[github.com/GetCassis/cassis-cli](https://github.com/GetCassis/cassis-cli) is a
+read-only mirror, synced automatically from the Cassis monorepo where the CLI is
+developed. Issues are welcome and watched; pull requests can't be merged here, so
+open an issue (or mail tech.admin@getcassis.com) and we'll port the patch upstream
+with credit.
+
+Only the CLI is open source. The Cassis backend it talks to is proprietary and
+requires an account.
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
