@@ -8,7 +8,6 @@ import subprocess
 import time
 from pathlib import Path
 from typing import Any, Optional
-from uuid import UUID
 
 import typer
 from cassis_cli.api import (
@@ -33,6 +32,7 @@ from cassis_cli.common import (
     EXIT_VALIDATION_FAILED,
     collect_tree,
     require_api_key,
+    resolve_project_id,
 )
 
 app = typer.Typer(no_args_is_help=True, help="Eval commands.")
@@ -144,11 +144,15 @@ def _print_summary(run: dict[str, Any]) -> None:
 
 @app.command(name="add-case")
 def add_case(
-    project_id: str = typer.Option(
-        ...,
+    path: Path = typer.Argument(
+        Path("."),
+        help="Repository checkout root (holds <base-path>/project.yml for the --project default).",
+    ),
+    project_id: Optional[str] = typer.Option(
+        None,
         "--project",
         envvar="CASSIS_PROJECT_ID",
-        help="Target Cassis project ID (UUID, shown in the project's URL).",
+        help="Target Cassis project ID (UUID). Defaults to the id in <base-path>/project.yml.",
     ),
     question: str = typer.Option(
         ...,
@@ -173,6 +177,12 @@ def add_case(
         envvar="CASSIS_API_URL",
         help="Cassis API base URL.",
     ),
+    base_path: str = typer.Option(
+        DEFAULT_BASE_PATH,
+        "--base-path",
+        envvar="CASSIS_BASE_PATH",
+        help="Repository directory the ontology is exported under (holds project.yml for the --project default).",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Print the created case as raw JSON."),
 ) -> None:
     """Add a gold test case to the project's eval suite.
@@ -185,11 +195,7 @@ def add_case(
     run, 2 on usage errors, 3 on transport/API errors.
     """
     api_key = require_api_key(api_key)
-    try:
-        UUID(project_id)
-    except ValueError:
-        typer.secho(f"--project must be a project ID (UUID), got {project_id!r}.", fg=typer.colors.RED, err=True)
-        raise typer.Exit(EXIT_USAGE)
+    project_id = resolve_project_id(project_id, path / Path(base_path))
     if not question.strip() or not gold_sql.strip():
         typer.secho("--question and --gold-sql must not be empty.", fg=typer.colors.RED, err=True)
         raise typer.Exit(EXIT_USAGE)
@@ -221,11 +227,11 @@ def run(
         Path("."),
         help="Repository checkout root (the directory containing the ontology export path).",
     ),
-    project_id: str = typer.Option(
-        ...,
+    project_id: Optional[str] = typer.Option(
+        None,
         "--project",
         envvar="CASSIS_PROJECT_ID",
-        help="Target Cassis project ID (UUID, shown in the project's URL).",
+        help="Target Cassis project ID (UUID). Defaults to the id in <base-path>/project.yml.",
     ),
     api_key: Optional[str] = typer.Option(
         None,
@@ -272,18 +278,13 @@ def run(
 ) -> None:
     """Run the project's eval suite against your local ontology files.
 
-    Uploads the local YAML tree and scores it in-memory — nothing is pushed or
+    Uploads the local ontology file tree and scores it in-memory — nothing is pushed or
     persisted in Cassis besides the eval run itself. With --branch, runs against
     an existing Cassis branch instead (no files are sent). Exits 0 when the run
     completes with every case passed, 1 on any failed case / failed run /
     invalid tree, 2 on usage errors, 3 on transport errors or --timeout.
     """
     api_key = require_api_key(api_key)
-    try:
-        UUID(project_id)
-    except ValueError:
-        typer.secho(f"--project must be a project ID (UUID), got {project_id!r}.", fg=typer.colors.RED, err=True)
-        raise typer.Exit(EXIT_USAGE)
     if branch is not None and label is not None:
         typer.secho(
             "--label cannot be used with --branch: branch runs are labelled with the branch name.",
@@ -297,6 +298,7 @@ def run(
         files, base_path = collect_tree(path, base_path)
         if label is None:
             label = _git_branch(path)
+    project_id = resolve_project_id(project_id, path / Path(base_path))
 
     try:
         run_record = post_eval_run_start(

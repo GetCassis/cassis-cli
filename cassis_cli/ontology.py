@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import List, Optional
-from uuid import UUID
 
 import typer
 from cassis_cli.api import (
@@ -29,7 +28,9 @@ from cassis_cli.common import (
 )
 from cassis_cli.common import collect_files as _collect_files
 from cassis_cli.common import collect_tree as _collect_tree
+from cassis_cli.common import is_legacy_domain_file as _is_legacy_domain_file
 from cassis_cli.common import require_api_key as _require_api_key
+from cassis_cli.common import resolve_project_id as _resolve_project_id
 from cassis_cli.guide import DOCTRINE_VERSION, GUIDE_FILENAME, guide_status, refresh_guide
 
 app = typer.Typer(no_args_is_help=True, help="Ontology commands.")
@@ -113,11 +114,11 @@ def pull(
         Path("."),
         help="Repository checkout root (the directory containing the ontology export path).",
     ),
-    project_id: str = typer.Option(
-        ...,
+    project_id: Optional[str] = typer.Option(
+        None,
         "--project",
         envvar="CASSIS_PROJECT_ID",
-        help="Source Cassis project ID (UUID, shown in the project's URL).",
+        help="Source Cassis project ID (UUID). Defaults to the id in <base-path>/project.yml.",
     ),
     api_key: Optional[str] = typer.Option(
         None,
@@ -140,28 +141,24 @@ def pull(
     prune: bool = typer.Option(
         True,
         "--prune/--no-prune",
-        help="Delete local YAML files that no longer exist in the project's ontology (default: prune).",
+        help="Delete local ontology files that no longer exist in the project's ontology (default: prune).",
     ),
     json_output: bool = typer.Option(False, "--json", help="Print a JSON summary of written/deleted files."),
 ) -> None:
     """Download the project's unpublished ontology into a repository checkout.
 
-    Writes the ontology YAML tree under the export path (full sync: files are
-    overwritten and, unless --no-prune, stale local YAML files are deleted, so
-    the checkout ends up matching the project exactly). Review the changes with
+    Writes the ontology tree under the export path (full sync: files are
+    overwritten and, unless --no-prune, stale local ontology files are deleted,
+    so the checkout ends up matching the project exactly). Review the changes with
     git diff before committing. Exits 0 on success, 2 on usage errors, 3 on
     transport/API errors.
     """
     api_key = _require_api_key(api_key)
-    try:
-        UUID(project_id)
-    except ValueError:
-        typer.secho(f"--project must be a project ID (UUID), got {project_id!r}.", fg=typer.colors.RED, err=True)
-        raise typer.Exit(EXIT_USAGE)
     base_path = base_path.strip().strip("/")
     if not base_path:
         typer.secho("--base-path must not be empty.", fg=typer.colors.RED, err=True)
         raise typer.Exit(EXIT_USAGE)
+    project_id = _resolve_project_id(project_id, path / Path(base_path))
 
     try:
         files = get_ontology_export(api_url=api_url, api_key=api_key, project_id=project_id)
@@ -221,6 +218,13 @@ def pull(
         if guide_written:
             summary += f"; wrote {base_path}/{GUIDE_FILENAME}"
         typer.secho(f"{summary}.", fg=typer.colors.GREEN)
+        migrated = sum(1 for rel in deleted if _is_legacy_domain_file(rel))
+        if migrated:
+            typer.secho(
+                f"  Migrated {migrated} domain(s) to Markdown README.md files; "
+                "the old _domain.yml / _project.yml were removed. Review the diff before committing.",
+                fg=typer.colors.YELLOW,
+            )
     raise typer.Exit(EXIT_OK)
 
 
@@ -230,11 +234,11 @@ def upload(
         Path("."),
         help="Repository checkout root (the directory containing the ontology export path).",
     ),
-    project_id: str = typer.Option(
-        ...,
+    project_id: Optional[str] = typer.Option(
+        None,
         "--project",
         envvar="CASSIS_PROJECT_ID",
-        help="Target Cassis project ID (UUID, shown in the project's URL).",
+        help="Target Cassis project ID (UUID). Defaults to the id in <base-path>/project.yml.",
     ),
     api_key: Optional[str] = typer.Option(
         None,
@@ -270,12 +274,8 @@ def upload(
     usage errors, 3 on transport/API errors.
     """
     api_key = _require_api_key(api_key)
-    try:
-        UUID(project_id)
-    except ValueError:
-        typer.secho(f"--project must be a project ID (UUID), got {project_id!r}.", fg=typer.colors.RED, err=True)
-        raise typer.Exit(EXIT_USAGE)
     files, base_path = _collect_tree(path, base_path)
+    project_id = _resolve_project_id(project_id, path / Path(base_path))
 
     try:
         result = post_ontology_import(
@@ -377,7 +377,7 @@ def fmt(
 
     changed = result["changed_paths"]
     removed = result["removed_paths"]
-    # The managed AGENTS.md guide is canonicalized alongside the YAML tree
+    # The managed AGENTS.md guide is canonicalized alongside the ontology tree
     # (it isn't in the tree, so the server round-trip above never sees it).
     # A guide stamped with a NEWER doctrine than this CLI carries is left
     # alone and does not fail --check: the repo is fine, the CLI is old.
@@ -422,6 +422,13 @@ def fmt(
             + ". Review the diff: fields Cassis does not recognize are dropped.",
             fg=typer.colors.YELLOW,
         )
+        migrated = sum(1 for p in removed if _is_legacy_domain_file(p))
+        if migrated:
+            typer.secho(
+                f"Migrated {migrated} domain(s) to Markdown README.md files; "
+                "the old _domain.yml / _project.yml were removed.",
+                fg=typer.colors.YELLOW,
+            )
     else:
         # Only the guide was refreshed — the "rewrote ..." line above already said so.
         typer.secho(f"✓ {len(files)} file(s) already canonical.", fg=typer.colors.GREEN)
@@ -440,11 +447,11 @@ def test(
         "-q",
         help="Natural-language question to probe (repeat for several).",
     ),
-    project_id: str = typer.Option(
-        ...,
+    project_id: Optional[str] = typer.Option(
+        None,
         "--project",
         envvar="CASSIS_PROJECT_ID",
-        help="Target Cassis project ID (UUID, shown in the project's URL).",
+        help="Target Cassis project ID (UUID). Defaults to the id in <base-path>/project.yml.",
     ),
     api_key: Optional[str] = typer.Option(
         None,
@@ -478,12 +485,8 @@ def test(
     invalid or a probe failed, 2 on usage errors, 3 on transport errors.
     """
     api_key = _require_api_key(api_key)
-    try:
-        UUID(project_id)
-    except ValueError:
-        typer.secho(f"--project must be a project ID (UUID), got {project_id!r}.", fg=typer.colors.RED, err=True)
-        raise typer.Exit(EXIT_USAGE)
     files, base_path = _collect_tree(path, base_path)
+    project_id = _resolve_project_id(project_id, path / Path(base_path))
 
     outcomes: "list[dict]" = []
     failed = False

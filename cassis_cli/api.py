@@ -191,6 +191,8 @@ def post_ontology_import(
         raise AuthError("The Cassis API rejected the API key (invalid or expired).")
     if response.status_code == 400:
         raise UploadValidationError(str(_detail_or_text(response)))
+    if response.status_code == 426:  # this CLI is too old for the server's ontology format
+        raise UploadValidationError(str(_detail_or_text(response)))
     if response.status_code in (403, 404):
         raise _project_scope_error(response)
     if response.status_code >= 400:

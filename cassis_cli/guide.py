@@ -6,7 +6,7 @@ identical — the backend image doesn't ship ``docs/``, so the CLI carries its o
 copy). ``pull`` writes it into the checkout as ``<base_path>/AGENTS.md`` and
 ``fmt`` keeps it canonical, so a repo-aware agent loads current Cassis modeling
 doctrine by convention. The file is managed: a banner marks it generated and the
-CLI overwrites local edits, exactly as ``fmt`` rewrites drifted ontology YAML.
+CLI overwrites local edits, exactly as ``fmt`` rewrites drifted ontology files.
 
 Two writers manage the file — this CLI and the Cassis server's git export — and
 they may run different doctrine versions (the guide ships inside each). The
@@ -31,7 +31,7 @@ GUIDE_FILENAME = "AGENTS.md"
 # Monotonic version of the doctrine text below. Bump it whenever
 # ontology_design_guide.md changes (a backend test enforces the pairing) — it
 # is what lets an older writer recognize a newer guide and leave it alone.
-DOCTRINE_VERSION = 1
+DOCTRINE_VERSION = 3
 
 # Must stay byte-identical to backend/app/services/ontology_guide.py::_BANNER —
 # the server-side git export writes the same file, and differing banners would

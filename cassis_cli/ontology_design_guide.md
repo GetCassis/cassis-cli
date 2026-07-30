@@ -13,13 +13,13 @@ Read this before proposing an ontology change.
 ## 1. What a Cassis ontology is
 
 The ontology is the curated business context the agent uses to translate a
-natural-language question into SQL. It has five kinds of object plus one
-project-level field, edited as YAML files under the repository's ontology
-directory (`cassis/` by default):
+natural-language question into SQL. It has five kinds of object plus a project-level root context, edited as
+files under the repository's ontology directory (`cassis/` by default) —
+domains as Markdown, everything else as YAML:
 
 | Layer | What it is | Key fields |
 |---|---|---|
-| **Root context** (`_project.yml → context_md`) | One free-text block, always in the agent's prompt | markdown |
+| **Root context** (`domains/README.md` body) | One free-text block, always in the agent's prompt | markdown |
 | **Domains** | A navigable tree grouping the business by subject area | `path`, `display_name`, `description`, `context_md` |
 | **Tables** | A physical warehouse table (introspected) or a virtual one (SQL-defined) placed in a domain | `name` (`schema.TABLE`), `description`, `synonyms`, `grain`, columns |
 | **Columns** | Enrichment on a table's columns | `description`, `unit`, `synonyms` |
@@ -31,11 +31,12 @@ On disk, the export layout is fixed — create each object in its canonical home
 
 ```
 cassis/                          (the git-sync base path)
-  _project.yml                   root context (context_md), project display name
-  domains/<path>/_domain.yml     one per domain, nested by path
-  tables/<schema>/<table>.yml    one per table, columns inline
-  metrics/<name>.yml             one per metric
-  joins.yml                      ALL joins, one list in one file
+  project.yml                    project identity: project id + Cassis format version (written by publish / pull)
+  domains/README.md              root domain (path ""): frontmatter (type/title/description) + context_md body
+  domains/<path>/README.md       one per sub-domain, nested by path (same Markdown format)
+  tables/<schema>/<table>.yml    one per table, columns inline (YAML)
+  metrics/<name>.yml             one per metric (YAML)
+  joins.yml                      ALL joins, one list in one file (YAML)
 ```
 
 Joins and metrics are never embedded inside a table's file, and a table's file
@@ -45,7 +46,7 @@ time (run `cassis ontology fmt` to see what would be lost).
 The **published** ontology is an immutable numbered snapshot — what production
 answers from. The **unpublished** ontology is the editable state (the published
 base plus unpublished changes). In a git-synced project the repository *is* the
-edit surface: you edit the YAML, open a pull request, and merging syncs and
+edit surface: you edit the files, open a pull request, and merging syncs and
 publishes it.
 
 Physical tables and their columns come from schema introspection — you never
@@ -151,6 +152,12 @@ its own — an empty navigational domain is just noise. Every table and every
 metric names a `domain_path` that must resolve to a domain you've declared (or the
 root, `""`).
 
+Each domain is a Markdown file (`domains/<path>/README.md`, or `domains/README.md`
+for the root). Its YAML frontmatter holds the structured fields — `type: Domain`,
+`title:` (the display name), `description:` — and the Markdown body **is** the
+domain's `context_md`. Write the display name as `title`, not `display_name`: an
+unrecognized frontmatter key is dropped on sync.
+
 A useful convention inside `context_md`: a `## Terms` section for the domain's
 vocabulary and disambiguation, and a `## Notes` section for routing hints and
 scope caveats. Omit either if you have nothing for it.
@@ -167,7 +174,7 @@ scope caveats. Omit either if you have nothing for it.
 - Markdown **links** to related domains, using the resolvable domain path
   (`[berries](play/features/berries)`), not a bare filename.
 
-**Root context** — the `context_md` in `_project.yml`, injected into every
+**Root context** — the body of the root domain (`domains/README.md`), injected into every
 conversation — **holds only what applies across almost every query:** corporate
 identity, the core entity hierarchy (how the central models relate — e.g. "users
 belong to companies via enrollments; primary enrollments are employees, partner
@@ -381,11 +388,11 @@ description, so a wrong example is worse than none.
 
 ## 12. Working in a git-synced repo
 
-The repository is the source of truth. Edit the YAML, then verify before opening
+The repository is the source of truth. Edit the files, then verify before opening
 a pull request — the CLI runs the same checks the platform does, from your
 checkout:
 
-- `cassis ontology check` — validate the files (YAML parse, round-trip, semantic
+- `cassis ontology check` — validate the files (parse, round-trip, semantic
   checks); the same gate that runs on the pull request.
 - `cassis ontology fmt` — rewrite the files in canonical form, so hand or agent
   edits round-trip cleanly and any dropped/unknown fields become visible in the

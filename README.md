@@ -5,8 +5,8 @@ Run Cassis actions from your CI pipelines:
 - `cassis ontology check` validates the ontology files in your repository with the exact same checks as the Cassis GitHub PR check (YAML parsing, round-trip, import validation) — so you can gate merges in any CI system, not just GitHub.
 - `cassis ontology fmt` rewrites the ontology files in canonical form (think `black`/`gofmt` for the ontology), so hand or agent edits pass the round-trip check.
 - `cassis ontology upload` uploads the ontology files to a Cassis project (full replace) and, by default, publishes them immediately as a new version — so a merge to your main branch can go live in one CI step.
-- `cassis ontology pull` downloads the project's unpublished ontology into your repository checkout (full sync — stale local YAML files are pruned), so you can start editing from the current state, or bootstrap a repo that isn't git-synced (e.g. Bitbucket).
-- `cassis ontology pull` and `cassis ontology fmt` also write `<base-path>/AGENTS.md`, the Cassis ontology modeling guide, into the checkout (default `cassis/AGENTS.md`) — a managed file (generated banner; the CLI overwrites local edits) so a repo-aware coding agent loads current Cassis modeling doctrine by convention. It sits inside the ontology directory but is not part of the ontology tree (the CLI reads only `*.yml`/`*.yaml`), so it is never uploaded, validated, or pruned. Commit it alongside your ontology changes. The guide text ships inside the CLI package, so its version tracks the **installed cassis-cli version** — upgrade the CLI (`pip install -U cassis-cli`) and re-run `fmt` to pick up doctrine updates; an unpinned `pip install cassis-cli` in CI gets them automatically. The banner stamps a doctrine version, and the CLI never *downgrades* the file: if the checkout's `AGENTS.md` was written by a newer doctrine (a newer CLI, or Cassis itself on a publish), `fmt`/`pull` leave it in place, print an upgrade notice, and `fmt --check` still passes.
+- `cassis ontology pull` downloads the project's unpublished ontology into your repository checkout (full sync — stale local ontology files are pruned), so you can start editing from the current state, or bootstrap a repo that isn't git-synced (e.g. Bitbucket).
+- `cassis ontology pull` and `cassis ontology fmt` also write `<base-path>/AGENTS.md`, the Cassis ontology modeling guide, into the checkout (default `cassis/AGENTS.md`) — a managed file (generated banner; the CLI overwrites local edits) so a repo-aware coding agent loads current Cassis modeling doctrine by convention. It sits inside the ontology directory but is not part of the ontology tree (which is the YAML files plus the domain Markdown files `domains/**/README.md`), so it is never uploaded, validated, or pruned. Commit it alongside your ontology changes. The guide text ships inside the CLI package, so its version tracks the **installed cassis-cli version** — upgrade the CLI (`pip install -U cassis-cli`) and re-run `fmt` to pick up doctrine updates; an unpinned `pip install cassis-cli` in CI gets them automatically. The banner stamps a doctrine version, and the CLI never *downgrades* the file: if the checkout's `AGENTS.md` was written by a newer doctrine (a newer CLI, or Cassis itself on a publish), `fmt`/`pull` leave it in place, print an upgrade notice, and `fmt --check` still passes.
 - The CLI identifies itself to the API (`User-Agent: cassis-cli/<version>`), and successful API responses advertise the newest published version — when you are behind, commands print a one-line upgrade notice on stderr (purely informational; output and exit codes are unchanged).
 - `cassis eval run` runs the project's eval suite against your local ontology files (scored in-memory — nothing is pushed to Cassis) and prints per-question results, so you can test the changes on your git branch before merging.
 - `cassis ontology test` runs individual questions through the text-to-SQL agent using your local ontology files, so you can check that a change actually works (e.g. a new column gets picked) — where `eval run` only checks for regressions on existing eval cases.
@@ -18,11 +18,21 @@ Run Cassis actions from your CI pipelines:
 pip install cassis-cli
 ```
 
+## Ontology file format
+
+The ontology tree under `<base-path>` (default `cassis/`) is:
+
+- **Project identity** — `project.yml`: the Cassis project id and format version. Written by `pull` and by server-side publish (the contexts that know the id); a local `fmt` won't create it.
+- **Domains** — Markdown files: every domain is the `README.md` of its folder — `domains/README.md` for the root, `domains/<path>/README.md` for each sub-domain. Each has a small YAML frontmatter block (`type`, `title`, `description`) and a Markdown body carrying the domain's `context_md`; a generated section at the bottom links the domain's tables and metrics (kept current by `fmt`/`pull` — edit your prose above it, and the PR check fails if the links are stale, so re-run `fmt`). The layout is a Cassis profile inspired by [OKF](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf): the files render on GitHub and read in any Markdown editor, but Cassis validates them strictly (unknown keys are flagged, not preserved).
+- **Tables, joins, metrics** — YAML, unchanged: `tables/<schema>/<table>.yml`, `joins.yml`, `metrics/<name>.yml`.
+
+**Migrating an existing repo** (domains were YAML `_project.yml` / `_domain.yml` before cassis-cli 1.1.0): upgrade and run `cassis ontology fmt` (or `cassis ontology pull` if you have no local edits) — it rewrites the domain files to Markdown and removes the old ones. Review the diff and commit. Cassis reads the old YAML domain files too, so an un-migrated repo keeps working until you convert it. **Uploading requires cassis-cli ≥ 1.1.0** — the server rejects an older CLI (which would drop the Markdown domain files) with a clear upgrade error.
+
 ## Setup
 
 1. Create an API key in Cassis under **Organization settings → API keys** (keys start with `sk-k6-`).
 2. Store it as a CI secret and expose it as `CASSIS_API_KEY`.
-3. For `pull`, `upload` and `eval run`: find the project ID (UUID) in the project's URL and expose it as `CASSIS_PROJECT_ID` (or pass `--project`).
+3. For `pull`, `upload`, `eval run`, `ontology test`, and `eval add-case`: the project ID (UUID) is taken from `<base-path>/project.yml` in the checkout (written by `pull` and by publishing) — so once a repo is pulled you don't need to pass it. To override, or before the first pull, set `CASSIS_PROJECT_ID` or pass `--project` (find the UUID in the project's URL).
 
 ## Usage
 
@@ -112,7 +122,7 @@ cassis ontology fmt --check
 | 3    | Transport/API error (unreachable API, invalid key, inaccessible project, unexpected response), another run already active, out of credits, or `--timeout` reached |
 
 Commands that send the local tree (`check`, `fmt`, `upload`, `eval run`, `test`) accept up to
-2000 YAML files / 5 MB total — far above real ontologies (a few hundred small
+2000 ontology files / 5 MB total — far above real ontologies (a few hundred small
 files). Beyond that the CLI fails fast with exit 2 before uploading anything;
 double-check `--base-path` if you hit it.
 

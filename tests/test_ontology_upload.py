@@ -206,3 +206,53 @@ class TestPostOntologyImport:
                 publish=False,
                 transport=transport,
             )
+
+
+OTHER_PROJECT_ID = "019f1111-1111-7111-8111-111111111111"
+
+
+class TestProjectIdDefault:
+    """`--project` defaults to the id recorded in <base-path>/project.yml."""
+
+    @staticmethod
+    def _capture(seen):
+        def handler(request):
+            seen["url"] = str(request.url)
+            return httpx.Response(200, json=_success_body(1))
+
+        return handler
+
+    def test_defaults_from_project_yml(self, repo, monkeypatch):
+        monkeypatch.delenv("CASSIS_PROJECT_ID", raising=False)
+        (repo / "cassis" / "project.yml").write_text(f"cassis_format_version: '0.1'\nproject_id: {PROJECT_ID}\n")
+        seen = {}
+        _mock_api(monkeypatch, self._capture(seen))
+
+        result = runner.invoke(app, ["ontology", "upload", str(repo), "--api-key", "sk-k6-test"])
+
+        assert result.exit_code == 0, result.output
+        assert seen["url"].endswith(f"/api/ci/projects/{PROJECT_ID}/ontology/import")
+        assert "from cassis/project.yml" in result.output  # notes where the id came from
+
+    def test_explicit_project_overrides_project_yml(self, repo, monkeypatch):
+        monkeypatch.delenv("CASSIS_PROJECT_ID", raising=False)
+        (repo / "cassis" / "project.yml").write_text(f"cassis_format_version: '0.1'\nproject_id: {PROJECT_ID}\n")
+        seen = {}
+        _mock_api(monkeypatch, self._capture(seen))
+
+        result = runner.invoke(
+            app, ["ontology", "upload", str(repo), "--project", OTHER_PROJECT_ID, "--api-key", "sk-k6-test"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert seen["url"].endswith(f"/api/ci/projects/{OTHER_PROJECT_ID}/ontology/import")
+
+    def test_no_project_and_no_project_yml_is_usage_error(self, repo, monkeypatch):
+        monkeypatch.delenv("CASSIS_PROJECT_ID", raising=False)
+        # repo has only the legacy _project.yml (not a project.yml identity file).
+        _mock_api(monkeypatch, self._capture({}))
+
+        result = runner.invoke(app, ["ontology", "upload", str(repo), "--api-key", "sk-k6-test"])
+
+        assert result.exit_code == 2
+        assert "No project" in result.output
