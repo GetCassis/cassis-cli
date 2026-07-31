@@ -134,10 +134,19 @@ def post_ontology_check(
     api_url: str,
     api_key: str,
     files: dict[str, str],
+    project_id: Optional[str] = None,
     transport: Optional[httpx.BaseTransport] = None,
 ) -> dict[str, Any]:
-    """POST the ontology tree to /api/ci/ontology-check and return the response body."""
-    url = api_url.rstrip("/") + "/api/ci/ontology-check"
+    """POST the ontology tree to the check endpoint and return the response body.
+
+    With ``project_id``, calls the project-scoped route, which additionally
+    cross-checks the tree against the project's source schema and returns
+    advisory ``warnings``; without it, the pure tree check.
+    """
+    if project_id:
+        url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/ontology/check"
+    else:
+        url = api_url.rstrip("/") + "/api/ci/ontology-check"
     try:
         with _client(transport=transport) as client:
             response = client.post(
@@ -150,6 +159,8 @@ def post_ontology_check(
 
     if response.status_code == 401:
         raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+    if project_id and response.status_code in (403, 404):
+        raise _project_scope_error(response)
     if response.status_code >= 400:
         raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
     result = _parse_json_response(response, url)
@@ -230,6 +241,47 @@ def get_ontology_export(
     if not isinstance(result, dict) or not isinstance(result.get("files"), dict):
         raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
     return result["files"]
+
+
+class NoSourceSchemaError(ApiError):
+    """The project's data source has no introspected schema to pull."""
+
+
+def get_schema_export(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> dict[str, Any]:
+    """GET /api/ci/projects/{project_id}/schema and return the response body."""
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/schema"
+    try:
+        with _client(transport=transport) as client:
+            response = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+    except httpx.HTTPError as exc:
+        raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
+
+    if response.status_code == 401:
+        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+    # "No source schema" is the marker the server's export endpoint puts in its
+    # 404 detail (backend endpoints/ci.py::export_source_schema — reworded only
+    # with a paired CLI release). Without this routing, a schema-less project
+    # would surface as the misleading "check --project / key access" hint below.
+    if response.status_code == 404 and "No source schema" in response.text:
+        raise NoSourceSchemaError(str(_detail_or_text(response)))
+    if response.status_code in (400, 403, 404):
+        raise _project_scope_error(response)
+    if response.status_code >= 400:
+        raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
+    result = _parse_json_response(response, url)
+    if (
+        not isinstance(result, dict)
+        or not isinstance(result.get("tables"), list)
+        or not isinstance(result.get("schema_version"), dict)
+    ):
+        raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
+    return result
 
 
 def post_eval_run_start(
@@ -319,6 +371,54 @@ def post_eval_case_create(
     if not isinstance(result, dict) or not all(key in result for key in ("id", "question", "gold_sql")):
         raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
     return result
+
+
+class EvalCaseNotFoundError(ApiError):
+    """The project has no current eval case with this id."""
+
+
+def get_eval_cases(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> list[dict[str, Any]]:
+    """GET /api/ci/projects/{project_id}/eval/cases and return the case list."""
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/eval/cases"
+    result = _get_eval_json(url, api_key, transport)
+    if not isinstance(result, list):
+        raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
+    return result
+
+
+def delete_eval_case(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    case_id: str,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> None:
+    """DELETE /api/ci/projects/{project_id}/eval/cases/{case_id}."""
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/eval/cases/{case_id}"
+    try:
+        with _client(transport=transport) as client:
+            response = client.delete(url, headers={"Authorization": f"Bearer {api_key}"})
+    except httpx.HTTPError as exc:
+        raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
+
+    if response.status_code == 401:
+        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+    # Exact-match wire contract with the DELETE endpoint's 404 detail (see
+    # `delete_eval_case` in backend/app/endpoints/ci.py): it distinguishes a
+    # missing case (exit 1) from a project-scope 404 (exit 3).
+    if response.status_code == 404 and _detail_or_text(response) == "Eval case not found":
+        raise EvalCaseNotFoundError(f"No current eval case {case_id} in this project (already deleted, or wrong id?).")
+    if response.status_code in (403, 404):
+        raise _project_scope_error(response)
+    if response.status_code >= 400:
+        raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
 
 
 def _get_eval_json(url: str, api_key: str, transport: Optional[httpx.BaseTransport]) -> Any:

@@ -357,6 +357,16 @@ description, so a wrong example is worse than none.
   real mechanic diverges.
 - **Don't describe things that don't exist.** Every table, column, and value you
   reference must be real.
+- **A hedge is not a safeguard.** "Likely `'M:SS.mmm'`", "probably", "appears to
+  be" reach the agent as the claim itself; the qualifier does not survive into
+  its reasoning. If a storage format, a unit, or a reason for nullability is not
+  in the source, leave it out and record the open question instead.
+- **Never invent a contrast with a column you did not read.** When a new column
+  shares a name with one on another table (`position_order`, `status_id`,
+  `lap`), the tempting sentence is "here it means X, unlike there". A schema
+  dump cannot support that. Open the sibling's description and reuse it if it
+  applies; if you can't confirm the relationship, say it's unverified. A false
+  distinction drawn confidently survives review as a documented decision.
 
 ---
 

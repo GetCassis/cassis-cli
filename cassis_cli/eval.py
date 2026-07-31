@@ -8,6 +8,7 @@ import subprocess
 import time
 from pathlib import Path
 from typing import Any, Optional
+from uuid import UUID
 
 import typer
 from cassis_cli.api import (
@@ -16,8 +17,11 @@ from cassis_cli.api import (
     AuthError,
     EvalCaseExistsError,
     EvalCaseGoldSqlError,
+    EvalCaseNotFoundError,
     EvalRunActiveError,
     EvalStartValidationError,
+    delete_eval_case,
+    get_eval_cases,
     get_eval_run,
     get_eval_run_results,
     post_eval_case_create,
@@ -218,6 +222,134 @@ def add_case(
         typer.echo(json.dumps(case, indent=2))
     else:
         typer.secho(f"✓ Added eval case {case['id']}: {case['question']}", fg=typer.colors.GREEN)
+    raise typer.Exit(EXIT_OK)
+
+
+@app.command(name="list-cases")
+def list_cases(
+    path: Path = typer.Argument(
+        Path("."),
+        help="Repository checkout root (holds <base-path>/project.yml for the --project default).",
+    ),
+    project_id: Optional[str] = typer.Option(
+        None,
+        "--project",
+        envvar="CASSIS_PROJECT_ID",
+        help="Target Cassis project ID (UUID). Defaults to the id in <base-path>/project.yml.",
+    ),
+    api_key: Optional[str] = typer.Option(
+        None,
+        "--api-key",
+        envvar="CASSIS_API_KEY",
+        help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+    ),
+    api_url: str = typer.Option(
+        DEFAULT_API_URL,
+        "--api-url",
+        envvar="CASSIS_API_URL",
+        help="Cassis API base URL.",
+    ),
+    base_path: str = typer.Option(
+        DEFAULT_BASE_PATH,
+        "--base-path",
+        envvar="CASSIS_BASE_PATH",
+        help="Repository directory the ontology is exported under (holds project.yml for the --project default).",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print the cases as raw JSON (includes gold SQL)."),
+) -> None:
+    """List the project's eval cases: the suite `cassis eval run` scores.
+
+    Prints each case's id and question (--json adds the gold SQL); the id is
+    what `cassis eval delete-case` takes. Exits 0 on success, 2 on usage
+    errors, 3 on transport/API errors.
+    """
+    api_key = require_api_key(api_key)
+    project_id = resolve_project_id(project_id, path / Path(base_path))
+
+    try:
+        cases = get_eval_cases(api_url=api_url, api_key=api_key, project_id=project_id)
+    except AuthError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_TRANSPORT) from exc
+    except ApiError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_TRANSPORT) from exc
+
+    if json_output:
+        typer.echo(json.dumps(cases, indent=2))
+    else:
+        if not cases:
+            typer.echo("No eval cases yet — add one with `cassis eval add-case`.")
+        for case in cases:
+            question = str(case.get("question", "")).replace("\n", " ")
+            typer.echo(f"{case.get('id')}  {question}")
+    raise typer.Exit(EXIT_OK)
+
+
+@app.command(name="delete-case")
+def delete_case(
+    case_id: str = typer.Argument(
+        ...,
+        help="Id of the eval case to delete (shown by `cassis eval list-cases`).",
+    ),
+    path: Path = typer.Option(
+        Path("."),
+        "--path",
+        help="Repository checkout root (holds <base-path>/project.yml for the --project default).",
+    ),
+    project_id: Optional[str] = typer.Option(
+        None,
+        "--project",
+        envvar="CASSIS_PROJECT_ID",
+        help="Target Cassis project ID (UUID). Defaults to the id in <base-path>/project.yml.",
+    ),
+    api_key: Optional[str] = typer.Option(
+        None,
+        "--api-key",
+        envvar="CASSIS_API_KEY",
+        help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+    ),
+    api_url: str = typer.Option(
+        DEFAULT_API_URL,
+        "--api-url",
+        envvar="CASSIS_API_URL",
+        help="Cassis API base URL.",
+    ),
+    base_path: str = typer.Option(
+        DEFAULT_BASE_PATH,
+        "--base-path",
+        envvar="CASSIS_BASE_PATH",
+        help="Repository directory the ontology is exported under (holds project.yml for the --project default).",
+    ),
+) -> None:
+    """Delete an eval case from the project's suite.
+
+    For pruning a case that is stale or wrong — e.g. its gold SQL encodes a
+    definition the ontology has since changed. Exits 0 on deletion, 1 when
+    the case does not exist in the project, 2 on usage errors, 3 on
+    transport/API errors.
+    """
+    api_key = require_api_key(api_key)
+    project_id = resolve_project_id(project_id, path / Path(base_path))
+    try:
+        UUID(case_id)
+    except ValueError:
+        typer.secho(f"CASE_ID must be a UUID, got {case_id!r}.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_USAGE)
+
+    try:
+        delete_eval_case(api_url=api_url, api_key=api_key, project_id=project_id, case_id=case_id)
+    except EvalCaseNotFoundError as exc:
+        typer.secho(str(exc), fg=typer.colors.YELLOW, err=True)
+        raise typer.Exit(EXIT_VALIDATION_FAILED) from exc
+    except AuthError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_TRANSPORT) from exc
+    except ApiError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_TRANSPORT) from exc
+
+    typer.secho(f"✓ Deleted eval case {case_id}.", fg=typer.colors.GREEN)
     raise typer.Exit(EXIT_OK)
 
 

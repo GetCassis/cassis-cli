@@ -2,7 +2,8 @@
 
 Run Cassis actions from your CI pipelines:
 
-- `cassis ontology check` validates the ontology files in your repository with the exact same checks as the Cassis GitHub PR check (YAML parsing, round-trip, import validation) — so you can gate merges in any CI system, not just GitHub.
+- `cassis ontology check` validates the ontology files in your repository with the exact same checks as the Cassis GitHub PR check (YAML parsing, round-trip, import validation) — so you can gate merges in any CI system, not just GitHub. In a checkout bound to a project (`project.yml`, `--project`, or `CASSIS_PROJECT_ID`), it also cross-checks the tree against the project's source schema: references to tables or columns the warehouse doesn't have print as **warnings** — advisory only (the object may simply not be built or synced yet), never a failed check.
+- `cassis schema pull` downloads the data source's full source schema (as Cassis last introspected it) into `<base-path>/.schema.json` — a **gitignored** local snapshot (the command maintains the ignore entry) with a `pulled_at` stamp. The warehouse stays authoritative; the snapshot is a cache for offline/bulk work — e.g. a coding agent grepping table and column names during a modeling pass instead of paging through the MCP `get_source_schema` tool. Re-run to refresh.
 - `cassis ontology fmt` rewrites the ontology files in canonical form (think `black`/`gofmt` for the ontology), so hand or agent edits pass the round-trip check.
 - `cassis ontology upload` uploads the ontology files to a Cassis project (full replace) and, by default, publishes them immediately as a new version — so a merge to your main branch can go live in one CI step.
 - `cassis ontology pull` downloads the project's unpublished ontology into your repository checkout (full sync — stale local ontology files are pruned), so you can start editing from the current state, or bootstrap a repo that isn't git-synced (e.g. Bitbucket).
@@ -11,6 +12,7 @@ Run Cassis actions from your CI pipelines:
 - `cassis eval run` runs the project's eval suite against your local ontology files (scored in-memory — nothing is pushed to Cassis) and prints per-question results, so you can test the changes on your git branch before merging.
 - `cassis ontology test` runs individual questions through the text-to-SQL agent using your local ontology files, so you can check that a change actually works (e.g. a new column gets picked) — where `eval run` only checks for regressions on existing eval cases.
 - `cassis eval add-case` adds a gold question/SQL case to the project's eval suite — after fixing an ontology issue, add the question users were failing on so `eval run` guards it from regressing.
+- `cassis eval list-cases` and `cassis eval delete-case` maintain the suite: list the current cases with their ids, and prune one that is stale or wrong (e.g. its gold SQL encodes a definition the ontology has since changed).
 
 ## Install
 
@@ -32,7 +34,7 @@ The ontology tree under `<base-path>` (default `cassis/`) is:
 
 1. Create an API key in Cassis under **Organization settings → API keys** (keys start with `sk-k6-`).
 2. Store it as a CI secret and expose it as `CASSIS_API_KEY`.
-3. For `pull`, `upload`, `eval run`, `ontology test`, and `eval add-case`: the project ID (UUID) is taken from `<base-path>/project.yml` in the checkout (written by `pull` and by publishing) — so once a repo is pulled you don't need to pass it. To override, or before the first pull, set `CASSIS_PROJECT_ID` or pass `--project` (find the UUID in the project's URL).
+3. For `pull`, `upload`, `schema pull`, `eval run`, `ontology test`, and the `eval` case commands (`add-case`, `list-cases`, `delete-case`): the project ID (UUID) is taken from `<base-path>/project.yml` in the checkout (written by `pull` and by publishing) — so once a repo is pulled you don't need to pass it. To override, or before the first pull, set `CASSIS_PROJECT_ID` or pass `--project` (find the UUID in the project's URL). `ontology check` uses the same resolution but treats it as optional: unbound checkouts get the project-less validation (no schema reference warnings).
 
 ## Usage
 
@@ -79,6 +81,13 @@ cassis ontology test --project ... -q "How much was refunded last month?" -q "Ne
 # Add a gold case to the eval suite (rejected if the exact question already exists):
 cassis eval add-case --project ... -q "How much was refunded last month?" \
   --gold-sql "SELECT SUM(refunded_cents) / 100.0 FROM public.orders WHERE ..."
+
+# List the suite's cases (id + question; --json adds the gold SQL), then prune one:
+cassis eval list-cases --project ...
+cassis eval delete-case 019f0000-0000-7000-8000-0000000000ca --project ...
+
+# Pull the source schema into <base-path>/.schema.json (gitignored local snapshot):
+cassis schema pull
 ```
 
 Configuration (flags take precedence over env vars):
@@ -88,7 +97,7 @@ Configuration (flags take precedence over env vars):
 | `--api-key` | `CASSIS_API_KEY` | — (required)                |
 | `--api-url` | `CASSIS_API_URL` | `https://app.getcassis.com` |
 | `--base-path` | `CASSIS_BASE_PATH` | `cassis` — must match the project's git-sync "Path" setting |
-| `--project` (pull, upload, eval run, eval add-case, test) | `CASSIS_PROJECT_ID` | — (required)      |
+| `--project` (check, pull, upload, schema pull, eval run, eval add-case, eval list-cases, eval delete-case, test) | `CASSIS_PROJECT_ID` | the id in `<base-path>/project.yml` (required before the first pull; `check` alone falls back to the project-less validation when unbound) |
 
 `cassis eval run` also accepts `--label` (run label in the Evals page; defaults
 to the branch name from the CI environment or the local git checkout; rejected
@@ -117,7 +126,7 @@ cassis ontology fmt --check
 | Code | Meaning                                                                        |
 | ---- | ------------------------------------------------------------------------------ |
 | 0    | Ontology is valid (check) / pulled (pull) / uploaded (upload) / eval run completed all-passed (eval run) / every probe completed (test — whatever its outcome; probes are informational, don't gate CI on them) |
-| 1    | Validation failed (check: findings printed; upload: nothing imported; eval run: invalid tree, failed cases, or failed/cancelled run; test: invalid tree or a probe failed) |
+| 1    | Validation failed (check: findings printed; upload: nothing imported; eval run: invalid tree, failed cases, or failed/cancelled run; test: invalid tree or a probe failed; add-case: duplicate question or gold SQL that does not run; delete-case: no such case in the project) |
 | 2    | Usage error (missing API key or project, no ontology directory, unreadable file, tree over the size limits) |
 | 3    | Transport/API error (unreachable API, invalid key, inaccessible project, unexpected response), another run already active, out of credits, or `--timeout` reached |
 

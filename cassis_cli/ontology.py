@@ -56,6 +56,12 @@ def check(
         Path("."),
         help="Repository checkout root (the directory containing the ontology export path).",
     ),
+    project_id: Optional[str] = typer.Option(
+        None,
+        "--project",
+        envvar="CASSIS_PROJECT_ID",
+        help="Target Cassis project ID (UUID). Defaults to the id in <base-path>/project.yml.",
+    ),
     api_key: Optional[str] = typer.Option(
         None,
         "--api-key",
@@ -79,14 +85,27 @@ def check(
     """Validate the ontology files in a repository checkout.
 
     Runs the same checks as the Cassis GitHub PR check (YAML parsing,
-    round-trip, import validation). Exits 0 when valid, 1 when validation
-    fails, 2 on usage errors, 3 on transport/API errors.
+    round-trip, import validation). When the checkout is bound to a project
+    (``project.yml``, ``--project``, or ``CASSIS_PROJECT_ID``), the tree is
+    additionally cross-checked against the project's source schema; unmatched
+    references print as warnings and never fail the check. Exits 0 when valid,
+    1 when validation fails, 2 on usage errors, 3 on transport/API errors.
     """
     api_key = _require_api_key(api_key)
     files, base_path = _collect_tree(path, base_path)
 
+    # Soft resolution: an unbound checkout is not an error — the check falls
+    # back to the project-less route (no schema reference stage).
+    project_id = _resolve_project_id(project_id, path / base_path, optional=True, quiet=json_output)
+    if not project_id and not json_output:
+        typer.secho(
+            "No project binding — schema reference checks skipped (bind with `cassis ontology pull` or --project).",
+            fg=typer.colors.CYAN,
+            err=True,
+        )
+
     try:
-        result = post_ontology_check(api_url=api_url, api_key=api_key, files=files)
+        result = post_ontology_check(api_url=api_url, api_key=api_key, files=files, project_id=project_id)
     except AuthError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(EXIT_TRANSPORT) from exc
@@ -94,16 +113,37 @@ def check(
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(EXIT_TRANSPORT) from exc
 
+    warnings = result.get("warnings") or []
     if json_output:
         typer.echo(json.dumps(result, indent=2))
     elif result["passed"]:
         typer.secho(f"✓ {result['summary']}", fg=typer.colors.GREEN)
+        # Disambiguate silence: "no warnings" must never read as "references
+        # verified" when the stage didn't run.
+        if project_id and result.get("references_checked") and not warnings:
+            typer.secho("✓ Schema references resolve against the source schema.", fg=typer.colors.GREEN)
+        elif project_id and not result.get("references_checked"):
+            typer.secho(
+                "Schema reference check skipped — the project has no source schema yet.",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
     else:
         typer.secho(result["title"], fg=typer.colors.RED, bold=True)
         typer.echo(result["summary"])
         for finding in result["findings"]:
             location = f"{base_path}/{finding.get('path')}: " if finding.get("path") else ""
             typer.echo(f"  {location}{finding.get('message', '')} ({finding.get('stage', '?')})")
+
+    if warnings and not json_output:
+        typer.secho(
+            f"{len(warnings)} schema reference warning(s) — advisory, expected if the objects "
+            "haven't been built or synced yet:",
+            fg=typer.colors.YELLOW,
+            bold=True,
+        )
+        for warning in warnings:
+            typer.secho(f"  {warning.get('message', '')}", fg=typer.colors.YELLOW)
 
     raise typer.Exit(EXIT_OK if result["passed"] else EXIT_VALIDATION_FAILED)
 

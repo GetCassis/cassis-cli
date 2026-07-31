@@ -210,3 +210,117 @@ class TestPostOntologyCheck:
             transport=httpx.MockTransport(handler),
         )
         assert seen["url"] == "https://example.com/api/ci/ontology-check"
+
+
+_PROJECT_ID = "019f0000-0000-7000-8000-000000000000"
+
+
+class TestOntologyCheckProjectScoping:
+    def test_project_yml_routes_to_the_scoped_endpoint(self, repo, monkeypatch):
+        (repo / "cassis" / "project.yml").write_text(f"cassis_format_version: 2\nproject_id: {_PROJECT_ID}\n")
+        seen = {}
+
+        def handler(request):
+            seen["url"] = str(request.url)
+            return httpx.Response(
+                200,
+                json={
+                    "passed": True,
+                    "file_count": 1,
+                    "title": "",
+                    "summary": "ok",
+                    "findings": [],
+                    "warnings": [],
+                    "references_checked": True,
+                },
+            )
+
+        _mock_api(monkeypatch, handler)
+
+        result = runner.invoke(app, ["ontology", "check", str(repo), "--api-key", "sk-k6-test"])
+
+        assert result.exit_code == 0
+        assert seen["url"].endswith(f"/api/ci/projects/{_PROJECT_ID}/ontology/check")
+        assert f"Using project {_PROJECT_ID}" in result.output
+        assert "Schema references resolve" in result.output
+
+    def test_unbound_checkout_falls_back_to_the_pure_route(self, repo, monkeypatch):
+        seen = {}
+
+        def handler(request):
+            seen["url"] = str(request.url)
+            return httpx.Response(
+                200, json={"passed": True, "file_count": 1, "title": "", "summary": "ok", "findings": []}
+            )
+
+        _mock_api(monkeypatch, handler)
+
+        result = runner.invoke(app, ["ontology", "check", str(repo), "--api-key", "sk-k6-test"])
+
+        assert result.exit_code == 0
+        assert seen["url"].endswith("/api/ci/ontology-check")
+        assert "schema reference checks skipped" in result.output
+
+    def test_warnings_print_yellow_but_do_not_fail(self, repo, monkeypatch):
+        (repo / "cassis" / "project.yml").write_text(f"cassis_format_version: 2\nproject_id: {_PROJECT_ID}\n")
+
+        def handler(request):
+            return httpx.Response(
+                200,
+                json={
+                    "passed": True,
+                    "file_count": 1,
+                    "title": "Ontology is valid",
+                    "summary": "ok",
+                    "findings": [],
+                    "warnings": [
+                        {
+                            "stage": "references",
+                            "path": None,
+                            "message": "Table 'public.orderz' is not in the source schema (v1)",
+                        }
+                    ],
+                    "references_checked": True,
+                },
+            )
+
+        _mock_api(monkeypatch, handler)
+
+        result = runner.invoke(app, ["ontology", "check", str(repo), "--api-key", "sk-k6-test"])
+
+        assert result.exit_code == 0
+        assert "1 schema reference warning(s)" in result.output
+        assert "public.orderz" in result.output
+
+    def test_invalid_project_id_exits_two(self, repo, monkeypatch):
+        result = runner.invoke(
+            app, ["ontology", "check", str(repo), "--api-key", "sk-k6-test", "--project", "not-a-uuid"]
+        )
+        assert result.exit_code == 2
+        assert "must be a project ID" in result.output
+
+    def test_skipped_reference_check_is_announced_not_silent(self, repo, monkeypatch):
+        """A bound checkout whose project has no source schema must not read as verified."""
+        (repo / "cassis" / "project.yml").write_text(f"cassis_format_version: 2\nproject_id: {_PROJECT_ID}\n")
+
+        def handler(request):
+            return httpx.Response(
+                200,
+                json={
+                    "passed": True,
+                    "file_count": 1,
+                    "title": "",
+                    "summary": "ok",
+                    "findings": [],
+                    "warnings": [],
+                    "references_checked": False,
+                },
+            )
+
+        _mock_api(monkeypatch, handler)
+
+        result = runner.invoke(app, ["ontology", "check", str(repo), "--api-key", "sk-k6-test"])
+
+        assert result.exit_code == 0
+        assert "Schema reference check skipped" in result.output
+        assert "Schema references resolve" not in result.output

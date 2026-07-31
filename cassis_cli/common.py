@@ -93,20 +93,27 @@ def read_project_id_from_dir(ontology_dir: Path) -> Optional[str]:
     return None
 
 
-def resolve_project_id(project_id: Optional[str], ontology_dir: Path) -> str:
+def resolve_project_id(
+    project_id: Optional[str], ontology_dir: Path, *, optional: bool = False, quiet: bool = False
+) -> Optional[str]:
     """Resolve the target project id, defaulting to the checkout's ``project.yml``.
 
     Precedence: an explicit ``--project`` / ``CASSIS_PROJECT_ID`` wins; otherwise
     the ``project_id`` recorded in ``<base-path>/project.yml`` (written by
     ``pull`` / publish) is used, and where it came from is noted on stderr so a
-    stale value in a copied repo is visible. Exits 2 (usage) when neither is
-    available or the value isn't a UUID.
+    stale value in a copied repo is visible (``quiet`` suppresses the note for
+    machine-readable output). Exits 2 (usage) when the value isn't a UUID, or —
+    unless ``optional`` — when no value is available at all; with ``optional``,
+    an unbound checkout returns None (``check`` falls back to the project-less
+    validation).
     """
     from_file = False
     if not project_id:
         project_id = read_project_id_from_dir(ontology_dir)
         from_file = project_id is not None
     if not project_id:
+        if optional:
+            return None
         typer.secho(
             f"No project. Pass --project (or set CASSIS_PROJECT_ID), or run in a checkout whose "
             f"{ontology_dir.name}/project.yml records it (written by `cassis ontology pull` or a publish).",
@@ -119,7 +126,7 @@ def resolve_project_id(project_id: Optional[str], ontology_dir: Path) -> str:
     except ValueError:
         typer.secho(f"--project must be a project ID (UUID), got {project_id!r}.", fg=typer.colors.RED, err=True)
         raise typer.Exit(EXIT_USAGE)
-    if from_file:
+    if from_file and not quiet:
         typer.secho(f"Using project {project_id} from {ontology_dir.name}/project.yml.", fg=typer.colors.CYAN, err=True)
     return project_id
 
