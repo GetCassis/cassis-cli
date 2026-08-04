@@ -243,6 +243,57 @@ def get_ontology_export(
     return result["files"]
 
 
+def get_projects(
+    *,
+    api_url: str,
+    api_key: str,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> list[dict[str, Any]]:
+    """GET /api/ci/projects and return the project list."""
+    url = api_url.rstrip("/") + "/api/ci/projects"
+    try:
+        with _client(transport=transport) as client:
+            response = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+    except httpx.HTTPError as exc:
+        raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
+
+    if response.status_code == 401:
+        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+    if response.status_code >= 400:
+        raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
+    result = _parse_json_response(response, url)
+    if not isinstance(result, list) or not all(isinstance(p, dict) and "id" in p and "name" in p for p in result):
+        raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
+    return result
+
+
+def get_project_status(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> dict[str, Any]:
+    """GET /api/ci/projects/{project_id}/status and return the status record."""
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/status"
+    try:
+        with _client(transport=transport) as client:
+            response = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+    except httpx.HTTPError as exc:
+        raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
+
+    if response.status_code == 401:
+        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+    if response.status_code in (403, 404):
+        raise _project_scope_error(response)
+    if response.status_code >= 400:
+        raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
+    result = _parse_json_response(response, url)
+    if not isinstance(result, dict) or "has_unpublished_changes" not in result:
+        raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
+    return result
+
+
 class NoSourceSchemaError(ApiError):
     """The project's data source has no introspected schema to pull."""
 
@@ -284,6 +335,68 @@ def get_schema_export(
     return result
 
 
+class SourceChangeConflictError(ApiError):
+    """A concurrent detection run is already active, or the project has a connected data source."""
+
+
+def post_detect_from_ddl(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    ddl: str,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> dict[str, Any]:
+    """POST /api/ci/projects/{project_id}/source-changes/detect-from-ddl and return the run record."""
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/source-changes/detect-from-ddl"
+    try:
+        with _client(transport=transport) as client:
+            response = client.post(url, json={"ddl": ddl}, headers={"Authorization": f"Bearer {api_key}"})
+    except httpx.HTTPError as exc:
+        raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
+
+    if response.status_code == 401:
+        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+    if response.status_code == 409:
+        raise SourceChangeConflictError(str(_detail_or_text(response)))
+    if response.status_code in (403, 404):
+        raise _project_scope_error(response)
+    if response.status_code >= 400:
+        raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
+    result = _parse_json_response(response, url)
+    if not isinstance(result, dict) or "run_id" not in result:
+        raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
+    return result
+
+
+def get_source_change_run(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    run_id: str,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> dict[str, Any]:
+    """GET /api/ci/projects/{project_id}/source-changes/runs/{run_id} and return the run record."""
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/source-changes/runs/{run_id}"
+    try:
+        with _client(transport=transport) as client:
+            response = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+    except httpx.HTTPError as exc:
+        raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
+
+    if response.status_code == 401:
+        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+    if response.status_code in (403, 404):
+        raise _project_scope_error(response)
+    if response.status_code >= 400:
+        raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
+    result = _parse_json_response(response, url)
+    if not isinstance(result, dict) or "run_id" not in result:
+        raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
+    return result
+
+
 def post_eval_run_start(
     *,
     api_url: str,
@@ -292,6 +405,7 @@ def post_eval_run_start(
     files: Optional[dict[str, str]] = None,
     branch: Optional[str] = None,
     label: Optional[str] = None,
+    case_ids: Optional[list[str]] = None,
     transport: Optional[httpx.BaseTransport] = None,
 ) -> dict[str, Any]:
     """POST to /api/ci/projects/{project_id}/eval/runs and return the run record."""
@@ -303,6 +417,8 @@ def post_eval_run_start(
         body["branch"] = branch
     if label is not None:
         body["label"] = label
+    if case_ids is not None:
+        body["test_case_ids"] = case_ids
     try:
         with _client(transport=transport) as client:
             response = client.post(url, json=body, headers={"Authorization": f"Bearer {api_key}"})

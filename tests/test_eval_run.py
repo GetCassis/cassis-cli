@@ -161,6 +161,55 @@ class TestEvalRunCommand:
         assert payload["run"]["run_id"] == RUN_ID
         assert "run_url" in payload
 
+    def test_case_flag_sends_test_case_ids(self, repo, monkeypatch):
+        case_a = "019f0000-0000-7000-8000-0000000000aa"
+        case_b = "019f0000-0000-7000-8000-0000000000bb"
+        seen = {}
+
+        def handler(request):
+            if request.method == "POST":
+                seen["body"] = json.loads(request.content)
+                return httpx.Response(201, json=_run_body(total=2))
+            if str(request.url).endswith("/results"):
+                return httpx.Response(200, json=[_result(), _result(question="Other?")])
+            return httpx.Response(200, json=_run_body(status="completed"))
+
+        _mock_api(monkeypatch, handler)
+
+        result = runner.invoke(
+            app,
+            [
+                "eval",
+                "run",
+                str(repo),
+                "--project",
+                PROJECT_ID,
+                "--api-key",
+                "sk-k6-test",
+                "--case",
+                case_a,
+                "--case",
+                case_b,
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert seen["body"]["test_case_ids"] == [case_a, case_b]
+
+    def test_malformed_case_id_exits_two(self, repo, monkeypatch):
+        def handler(request):  # nothing must reach the network
+            raise AssertionError("no request expected")
+
+        _mock_api(monkeypatch, handler)
+
+        result = runner.invoke(
+            app,
+            ["eval", "run", str(repo), "--project", PROJECT_ID, "--api-key", "sk-k6-test", "--case", "not-a-uuid"],
+        )
+
+        assert result.exit_code == 2
+        assert "--case must be an eval case ID" in result.output
+
     def test_label_with_branch_exits_two(self, repo, monkeypatch):
         def handler(request):  # nothing must reach the network
             raise AssertionError("no request expected")

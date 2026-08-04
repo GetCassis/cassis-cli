@@ -10,22 +10,35 @@ the MCP `get_source_schema` tool; `pulled_at` records how stale it is.
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import typer
-from cassis_cli.api import DEFAULT_API_URL, ApiError, AuthError, get_schema_export
+from cassis_cli.api import (
+    DEFAULT_API_URL,
+    ApiError,
+    AuthError,
+    SourceChangeConflictError,
+    get_schema_export,
+    get_source_change_run,
+    post_detect_from_ddl,
+)
 from cassis_cli.common import (
     DEFAULT_BASE_PATH,
     EXIT_OK,
     EXIT_TRANSPORT,
     EXIT_USAGE,
+    EXIT_VALIDATION_FAILED,
     require_api_key,
     resolve_project_id,
 )
 
-app = typer.Typer(help="Pull a local, gitignored snapshot of the data source's schema.")
+app = typer.Typer(help="Pull or push the data source's schema.")
+
+_TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
+_MAX_CONSECUTIVE_POLL_FAILURES = 5
 
 SNAPSHOT_FILENAME = ".schema.json"
 _GITIGNORE_HEADER = "# Cassis local caches (observed state — never commit)"
@@ -127,3 +140,156 @@ def ensure_gitignored(ontology_dir: Path) -> None:
         return
     prefix = "" if not existing else existing.rstrip("\n") + "\n"
     gitignore.write_text(f"{prefix}{_GITIGNORE_HEADER}\n{SNAPSHOT_FILENAME}\n", encoding="utf-8")
+
+
+@app.command()
+def push(
+    ddl_file: Path = typer.Argument(
+        ..., help="Path to the DDL file (.sql, .ddl, .txt) containing CREATE TABLE statements."
+    ),
+    path: Path = typer.Option(
+        Path("."),
+        help="Repository checkout root (the directory containing the ontology export path).",
+    ),
+    project_id: Optional[str] = typer.Option(
+        None,
+        "--project",
+        envvar="CASSIS_PROJECT_ID",
+        help="Target Cassis project ID (UUID). Defaults to the id in <base-path>/project.yml.",
+    ),
+    api_key: Optional[str] = typer.Option(
+        None,
+        "--api-key",
+        envvar="CASSIS_API_KEY",
+        help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+    ),
+    api_url: str = typer.Option(
+        DEFAULT_API_URL,
+        "--api-url",
+        envvar="CASSIS_API_URL",
+        help="Cassis API base URL.",
+    ),
+    base_path: str = typer.Option(
+        DEFAULT_BASE_PATH,
+        "--base-path",
+        envvar="CASSIS_BASE_PATH",
+        help="Repository directory the ontology is exported under (the project's git-sync Path setting).",
+    ),
+    wait: bool = typer.Option(True, "--wait/--no-wait", help="Wait for the detection run to complete."),
+    poll_interval: float = typer.Option(5.0, "--poll-interval", help="Seconds between polls with --wait."),
+    timeout: float = typer.Option(600.0, "--timeout", help="Give up waiting after this many seconds."),
+    json_output: bool = typer.Option(False, "--json", help="Print the run record as raw JSON."),
+) -> None:
+    """Upload a DDL file to detect source-schema changes (same as the webapp's "Update from DDL").
+
+    The DDL must contain at least one CREATE TABLE statement and represents the
+    project's complete source schema. Cassis diffs it against the ontology:
+    added, dropped, and changed objects appear in Ontology > Review > Data
+    source for approval. Re-uploading a corrected DDL supersedes the previous
+    one. Only works on DDL-only projects (no warehouse connection). Exits 0 on
+    success, 1 on a failed detection run, 2 on usage errors, 3 on transport/API
+    errors or a --wait timeout.
+    """
+    api_key = require_api_key(api_key)
+    project_id = resolve_project_id(project_id, path / base_path)
+
+    try:
+        ddl_text = ddl_file.read_text(encoding="utf-8")
+    except OSError as exc:
+        typer.secho(f"Cannot read {ddl_file}: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_USAGE) from exc
+    except UnicodeDecodeError as exc:
+        typer.secho(f"Cannot read {ddl_file}: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_USAGE) from exc
+
+    if not ddl_text.strip():
+        typer.secho("DDL file is empty.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_USAGE)
+
+    try:
+        run = post_detect_from_ddl(api_url=api_url, api_key=api_key, project_id=project_id, ddl=ddl_text)
+    except SourceChangeConflictError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_VALIDATION_FAILED) from exc
+    except (AuthError, ApiError) as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_TRANSPORT) from exc
+
+    run_id = run["run_id"]
+    typer.echo(f"Detection run started: {run_id}")
+
+    if not wait:
+        if json_output:
+            typer.echo(json.dumps(run, indent=2))
+        raise typer.Exit(EXIT_OK)
+
+    run = _wait_for_detection_run(
+        api_url=api_url,
+        api_key=api_key,
+        project_id=project_id,
+        run_id=run_id,
+        poll_interval=poll_interval,
+        timeout=timeout,
+    )
+
+    if json_output:
+        typer.echo(json.dumps(run, indent=2))
+
+    run_status = run.get("status")
+    if run_status == "completed":
+        summary = run.get("summary") or {}
+        total = summary.get("total_changes", 0)
+        typer.secho(
+            f"✓ Detection completed: {total} change(s) detected." if total else "✓ Detection completed: no changes.",
+            fg=typer.colors.GREEN,
+        )
+        raise typer.Exit(EXIT_OK)
+    if run_status == "failed":
+        error = run.get("error") or "unknown error"
+        typer.secho(f"Detection failed: {error}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_VALIDATION_FAILED)
+    if run_status == "cancelled":
+        typer.secho("Detection run was cancelled.", fg=typer.colors.YELLOW, err=True)
+        raise typer.Exit(EXIT_VALIDATION_FAILED)
+    typer.secho(f"Detection run ended with unexpected status: {run_status}", fg=typer.colors.RED, err=True)
+    raise typer.Exit(EXIT_TRANSPORT)
+
+
+def _wait_for_detection_run(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    run_id: str,
+    poll_interval: float,
+    timeout: float,
+) -> "dict[str, Any]":
+    """Poll until the detection run reaches a terminal status."""
+    deadline = time.monotonic() + timeout
+    consecutive_failures = 0
+    while True:
+        try:
+            run = get_source_change_run(api_url=api_url, api_key=api_key, project_id=project_id, run_id=run_id)
+            consecutive_failures = 0
+        except AuthError as exc:
+            typer.secho(str(exc), fg=typer.colors.RED, err=True)
+            raise typer.Exit(EXIT_TRANSPORT) from exc
+        except ApiError as exc:
+            consecutive_failures += 1
+            if consecutive_failures >= _MAX_CONSECUTIVE_POLL_FAILURES:
+                typer.secho(str(exc), fg=typer.colors.RED, err=True)
+                raise typer.Exit(EXIT_TRANSPORT) from exc
+            time.sleep(poll_interval)
+            continue
+
+        if run.get("status") in _TERMINAL_RUN_STATUSES:
+            return run
+
+        if time.monotonic() >= deadline:
+            typer.secho(
+                f"Timed out after {timeout:.0f}s: the detection run is still {run.get('status', '?')}.",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
+            raise typer.Exit(EXIT_TRANSPORT)
+        time.sleep(poll_interval)

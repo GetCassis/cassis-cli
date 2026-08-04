@@ -7,7 +7,7 @@ import os
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, List, Optional
 from uuid import UUID
 
 import typer
@@ -164,10 +164,15 @@ def add_case(
         "--question",
         help="The natural-language question the case guards.",
     ),
-    gold_sql: str = typer.Option(
-        ...,
+    gold_sql: Optional[str] = typer.Option(
+        None,
         "--gold-sql",
         help="The correct SQL for the question; executed at run time to produce the expected output.",
+    ),
+    gold_sql_file: Optional[Path] = typer.Option(
+        None,
+        "--gold-sql-file",
+        help="Read the gold SQL from this file instead of --gold-sql (no shell quoting of multi-line SQL).",
     ),
     api_key: Optional[str] = typer.Option(
         None,
@@ -195,13 +200,31 @@ def add_case(
     failing on becomes a gold case, so `cassis eval run` guards it from
     regressing. On an executable data source the gold SQL is run before the
     case is stored, so a case that cannot execute never enters the suite.
+    The SQL comes from --gold-sql (inline) or --gold-sql-file (a file path;
+    prefer it for multi-line SQL, which shell quoting mangles inline).
     Exits 0 on creation, 1 on a duplicate question or gold SQL that does not
     run, 2 on usage errors, 3 on transport/API errors.
     """
     api_key = require_api_key(api_key)
     project_id = resolve_project_id(project_id, path / Path(base_path))
+    if (gold_sql is None) == (gold_sql_file is None):
+        typer.secho("Pass exactly one of --gold-sql or --gold-sql-file.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_USAGE)
+    if gold_sql_file is not None:
+        try:
+            gold_sql = gold_sql_file.read_text(encoding="utf-8")
+        # Two separate handlers: the repo-wide black targets py314 and would
+        # strip the parens off a tuple form, which is a SyntaxError on the
+        # CLI's supported Python (>=3.10).
+        except OSError as exc:
+            typer.secho(f"Cannot read {gold_sql_file}: {exc}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(EXIT_USAGE) from exc
+        except UnicodeDecodeError as exc:
+            typer.secho(f"Cannot read {gold_sql_file}: {exc}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(EXIT_USAGE) from exc
+    assert gold_sql is not None
     if not question.strip() or not gold_sql.strip():
-        typer.secho("--question and --gold-sql must not be empty.", fg=typer.colors.RED, err=True)
+        typer.secho("--question and the gold SQL must not be empty.", fg=typer.colors.RED, err=True)
         raise typer.Exit(EXIT_USAGE)
 
     try:
@@ -388,6 +411,11 @@ def run(
         "--branch",
         help="Run against an existing Cassis ontology branch by name instead of local files.",
     ),
+    case: Optional[List[str]] = typer.Option(
+        None,
+        "--case",
+        help="Run only this eval case id (repeatable; ids from `eval list-cases` or `add-case`).",
+    ),
     label: Optional[str] = typer.Option(
         None,
         "--label",
@@ -412,11 +440,19 @@ def run(
 
     Uploads the local ontology file tree and scores it in-memory — nothing is pushed or
     persisted in Cassis besides the eval run itself. With --branch, runs against
-    an existing Cassis branch instead (no files are sent). Exits 0 when the run
-    completes with every case passed, 1 on any failed case / failed run /
-    invalid tree, 2 on usage errors, 3 on transport errors or --timeout.
+    an existing Cassis branch instead (no files are sent). With --case, only the
+    named case(s) run — e.g. proving one fresh `add-case` in seconds instead of
+    rerunning the whole suite. Exits 0 when the run completes with every case
+    passed, 1 on any failed case / failed run / invalid tree, 2 on usage
+    errors, 3 on transport errors or --timeout.
     """
     api_key = require_api_key(api_key)
+    for case_id in case or []:
+        try:
+            UUID(case_id)
+        except ValueError:
+            typer.secho(f"--case must be an eval case ID (UUID), got {case_id!r}.", fg=typer.colors.RED, err=True)
+            raise typer.Exit(EXIT_USAGE)
     if branch is not None and label is not None:
         typer.secho(
             "--label cannot be used with --branch: branch runs are labelled with the branch name.",
@@ -440,6 +476,7 @@ def run(
             files=files,
             branch=branch,
             label=label,
+            case_ids=case,
         )
     except EvalStartValidationError as exc:
         _print_validation_failure(exc.detail, base_path)

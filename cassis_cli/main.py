@@ -6,7 +6,10 @@ import typer
 from cassis_cli import __version__
 from cassis_cli.eval import app as eval_app
 from cassis_cli.ontology import app as ontology_app
+from cassis_cli.projects import app as projects_app
 from cassis_cli.schema import app as schema_app
+from cassis_cli.status import status
+from cassis_cli.verify import verify
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -15,6 +18,9 @@ app = typer.Typer(
 app.add_typer(ontology_app, name="ontology")
 app.add_typer(eval_app, name="eval")
 app.add_typer(schema_app, name="schema")
+app.add_typer(projects_app, name="projects")
+app.command()(status)
+app.command()(verify)
 
 
 @app.command()

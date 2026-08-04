@@ -100,6 +100,77 @@ class TestEvalAddCase:
         )
         assert result.exit_code == 2
 
+    def test_gold_sql_file_sends_file_content_verbatim(self, monkeypatch, tmp_path):
+        # The whole point of the flag: multi-line SQL with characters the
+        # shell would mangle inline (#, quotes, newlines) arrives untouched.
+        sql = "-- monthly refunds\nSELECT SUM(amount) # cents\nFROM refunds\nWHERE note = 'it''s fine'\n"
+        sql_file = tmp_path / "gold.sql"
+        sql_file.write_text(sql, encoding="utf-8")
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(
+                201,
+                json={"id": "019f0000-0000-7000-8000-0000000000ca", "question": "Refunds?", "gold_sql": sql},
+            )
+
+        _mock_api(monkeypatch, handler)
+
+        result = runner.invoke(
+            app,
+            [
+                "eval",
+                "add-case",
+                "--project",
+                PROJECT_ID,
+                "--api-key",
+                "sk-k6-test",
+                "-q",
+                "Refunds?",
+                "--gold-sql-file",
+                str(sql_file),
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert seen["body"]["gold_sql"] == sql
+
+    def test_both_gold_sql_flags_is_usage_error(self, tmp_path):
+        sql_file = tmp_path / "gold.sql"
+        sql_file.write_text("SELECT 1\n")
+
+        result = runner.invoke(app, _args("--gold-sql-file", str(sql_file)))
+
+        assert result.exit_code == 2
+        assert "exactly one" in result.output
+
+    def test_neither_gold_sql_flag_is_usage_error(self):
+        result = runner.invoke(
+            app, ["eval", "add-case", "--project", PROJECT_ID, "--api-key", "sk-k6-test", "-q", "Refunds?"]
+        )
+        assert result.exit_code == 2
+        assert "exactly one" in result.output
+
+    def test_unreadable_gold_sql_file_is_usage_error(self, tmp_path):
+        result = runner.invoke(
+            app,
+            [
+                "eval",
+                "add-case",
+                "--project",
+                PROJECT_ID,
+                "--api-key",
+                "sk-k6-test",
+                "-q",
+                "Refunds?",
+                "--gold-sql-file",
+                str(tmp_path / "missing.sql"),
+            ],
+        )
+        assert result.exit_code == 2
+        assert "Cannot read" in result.output
+
     def test_json_output(self, monkeypatch):
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(

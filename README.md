@@ -13,6 +13,10 @@ Run Cassis actions from your CI pipelines:
 - `cassis ontology test` runs individual questions through the text-to-SQL agent using your local ontology files, so you can check that a change actually works (e.g. a new column gets picked) — where `eval run` only checks for regressions on existing eval cases.
 - `cassis eval add-case` adds a gold question/SQL case to the project's eval suite — after fixing an ontology issue, add the question users were failing on so `eval run` guards it from regressing.
 - `cassis eval list-cases` and `cassis eval delete-case` maintain the suite: list the current cases with their ids, and prune one that is stale or wrong (e.g. its gold SQL encodes a definition the ontology has since changed).
+- `cassis schema push` uploads a DDL file to detect source-schema changes on a DDL-only project (same as the webapp's "Update from DDL" button): Cassis diffs the DDL against the ontology and surfaces added, dropped, and changed objects in Ontology > Review > Data source for approval. Waits for completion by default; `--no-wait` returns immediately.
+- `cassis projects list` lists the projects your API key can reach — id (what `--project` and `CASSIS_PROJECT_ID` take), name, published ontology version, and data-source dialect — so a pipeline or agent can discover the project id from the terminal instead of fishing it out of a webapp URL.
+- `cassis status` shows the project's published version (number, label, git commit), whether unpublished changes await publication, the git-sync binding, and how your local git HEAD relates to the published commit (in sync / N commits ahead / diverged). `cassis status --watch` polls until the published commit matches your local HEAD — e.g. right after merging a PR whose CI publishes the ontology — instead of watching the GitHub Actions tab.
+- `cassis verify` runs the full local gate in one verb — `ontology fmt --check`, `ontology check`, `eval run` — stopping at the first failure. One command in a checkout ("is this change safe to merge?"), one job in CI. `--no-eval` skips the eval suite.
 
 ## Install
 
@@ -34,7 +38,7 @@ The ontology tree under `<base-path>` (default `cassis/`) is:
 
 1. Create an API key in Cassis under **Organization settings → API keys** (keys start with `sk-k6-`).
 2. Store it as a CI secret and expose it as `CASSIS_API_KEY`.
-3. For `pull`, `upload`, `schema pull`, `eval run`, `ontology test`, and the `eval` case commands (`add-case`, `list-cases`, `delete-case`): the project ID (UUID) is taken from `<base-path>/project.yml` in the checkout (written by `pull` and by publishing) — so once a repo is pulled you don't need to pass it. To override, or before the first pull, set `CASSIS_PROJECT_ID` or pass `--project` (find the UUID in the project's URL). `ontology check` uses the same resolution but treats it as optional: unbound checkouts get the project-less validation (no schema reference warnings).
+3. For `pull`, `upload`, `schema pull`, `eval run`, `ontology test`, and the `eval` case commands (`add-case`, `list-cases`, `delete-case`): the project ID (UUID) is taken from `<base-path>/project.yml` in the checkout (written by `pull` and by publishing) — so once a repo is pulled you don't need to pass it. To override, or before the first pull, set `CASSIS_PROJECT_ID` or pass `--project` (find the UUID with `cassis projects list`, or in the project's URL). `ontology check` uses the same resolution but treats it as optional: unbound checkouts get the project-less validation (no schema reference warnings).
 
 ## Usage
 
@@ -71,6 +75,9 @@ cassis eval run --project ...
 # Run against an existing Cassis ontology branch, or the unpublished ontology:
 cassis eval run --project ... --branch feature-x
 
+# Run only specific cases (repeatable) — e.g. prove a fresh add-case in seconds:
+cassis eval run --project ... --case 019f0000-0000-7000-8000-0000000000ca
+
 # Start the run and return immediately (poll in the webapp):
 cassis eval run --project ... --no-wait
 
@@ -82,12 +89,33 @@ cassis ontology test --project ... -q "How much was refunded last month?" -q "Ne
 cassis eval add-case --project ... -q "How much was refunded last month?" \
   --gold-sql "SELECT SUM(refunded_cents) / 100.0 FROM public.orders WHERE ..."
 
+# Multi-line gold SQL: read it from a file instead (no shell quoting pitfalls):
+cassis eval add-case --project ... -q "How much was refunded last month?" \
+  --gold-sql-file refunds.sql
+
 # List the suite's cases (id + question; --json adds the gold SQL), then prune one:
 cassis eval list-cases --project ...
 cassis eval delete-case 019f0000-0000-7000-8000-0000000000ca --project ...
 
 # Pull the source schema into <base-path>/.schema.json (gitignored local snapshot):
 cassis schema pull
+
+# Push a DDL file to detect source-schema changes (DDL-only projects):
+cassis schema push schema.sql
+
+# Push and return immediately (poll in the webapp):
+cassis schema push schema.sql --no-wait
+
+# List the projects the API key can reach (id, name, published version, dialect):
+cassis projects list
+
+# Published version vs local checkout (add --watch to poll until your merge is published):
+cassis status
+cassis status --watch --timeout 600
+
+# The full local gate in one verb (fmt --check, check, eval run; stops at the first failure):
+cassis verify
+cassis verify --no-eval
 ```
 
 Configuration (flags take precedence over env vars):
@@ -99,7 +127,8 @@ Configuration (flags take precedence over env vars):
 | `--base-path` | `CASSIS_BASE_PATH` | `cassis` — must match the project's git-sync "Path" setting |
 | `--project` (check, pull, upload, schema pull, eval run, eval add-case, eval list-cases, eval delete-case, test) | `CASSIS_PROJECT_ID` | the id in `<base-path>/project.yml` (required before the first pull; `check` alone falls back to the project-less validation when unbound) |
 
-`cassis eval run` also accepts `--label` (run label in the Evals page; defaults
+`cassis eval run` also accepts `--case <id>` (repeatable; run only the named
+cases, ids from `eval list-cases` or `add-case`), `--label` (run label in the Evals page; defaults
 to the branch name from the CI environment or the local git checkout; rejected
 with `--branch`, whose runs are labelled with the branch name), `--wait/--no-wait`, `--poll-interval` (5 s),
 `--timeout` (30 min — the run keeps going server-side if the CLI stops waiting),
