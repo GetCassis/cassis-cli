@@ -139,9 +139,10 @@ def post_ontology_check(
 ) -> dict[str, Any]:
     """POST the ontology tree to the check endpoint and return the response body.
 
+    Both routes return advisory ``audit`` quality findings in ``warnings``.
     With ``project_id``, calls the project-scoped route, which additionally
-    cross-checks the tree against the project's source schema and returns
-    advisory ``warnings``; without it, the pure tree check.
+    cross-checks the tree against the project's source schema and adds
+    ``references`` warnings; without it, the pure tree check.
     """
     if project_id:
         url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/ontology/check"

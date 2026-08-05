@@ -49,6 +49,27 @@ def _passing_handler(request):
     )
 
 
+def _audit_warning_handler(request):
+    """A tree that validates but carries advisory quality findings."""
+    return httpx.Response(
+        200,
+        json={
+            "passed": True,
+            "file_count": 2,
+            "title": "Ontology is valid",
+            "summary": "YAML parsing, round-trip and import validation passed (2 files).",
+            "findings": [],
+            "warnings": [
+                {
+                    "stage": "audit",
+                    "path": None,
+                    "message": "[unassigned_table] public.orders: Table 'public.orders' is not assigned to any domain",
+                },
+            ],
+        },
+    )
+
+
 def _failing_handler(request):
     return httpx.Response(
         200,
@@ -71,6 +92,24 @@ class TestOntologyCheckCommand:
         assert result.exit_code == 0
         assert "Ontology is valid" not in result.output  # success prints the summary line
         assert "passed" in result.output
+
+    def test_audit_warnings_are_printed_without_failing(self, repo, monkeypatch):
+        _mock_api(monkeypatch, _audit_warning_handler)
+
+        result = runner.invoke(app, ["ontology", "check", str(repo), "--api-key", "sk-k6-test"])
+
+        assert result.exit_code == 0, "advisory warnings must not change the exit code"
+        assert "1 ontology quality warning(s)" in result.output
+        assert "[unassigned_table] public.orders" in result.output
+
+    def test_response_without_warnings_field_is_tolerated(self, repo, monkeypatch):
+        # A server older than the warnings field omits it; the CLI must not KeyError.
+        _mock_api(monkeypatch, _passing_handler)
+
+        result = runner.invoke(app, ["ontology", "check", str(repo), "--api-key", "sk-k6-test"])
+
+        assert result.exit_code == 0
+        assert "warning" not in result.output
 
     def test_failure_exits_one_and_prints_findings(self, repo, monkeypatch):
         _mock_api(monkeypatch, _failing_handler)
@@ -291,6 +330,39 @@ class TestOntologyCheckProjectScoping:
         assert result.exit_code == 0
         assert "1 schema reference warning(s)" in result.output
         assert "public.orderz" in result.output
+
+    def test_audit_warnings_do_not_hide_reference_verification(self, repo, monkeypatch):
+        """The 'references resolve' line keys on reference warnings alone — audit findings must not mute it."""
+        (repo / "cassis" / "project.yml").write_text(f"cassis_format_version: 2\nproject_id: {_PROJECT_ID}\n")
+
+        def handler(request):
+            return httpx.Response(
+                200,
+                json={
+                    "passed": True,
+                    "file_count": 1,
+                    "title": "Ontology is valid",
+                    "summary": "ok",
+                    "findings": [],
+                    "warnings": [
+                        {
+                            "stage": "audit",
+                            "path": None,
+                            "message": "[missing_table_description] public.orders: Table has no description",
+                        }
+                    ],
+                    "references_checked": True,
+                },
+            )
+
+        _mock_api(monkeypatch, handler)
+
+        result = runner.invoke(app, ["ontology", "check", str(repo), "--api-key", "sk-k6-test"])
+
+        assert result.exit_code == 0
+        assert "Schema references resolve" in result.output
+        assert "1 ontology quality warning(s)" in result.output
+        assert "[missing_table_description] public.orders" in result.output
 
     def test_invalid_project_id_exits_two(self, repo, monkeypatch):
         result = runner.invoke(

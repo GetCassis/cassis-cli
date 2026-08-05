@@ -85,11 +85,14 @@ def check(
     """Validate the ontology files in a repository checkout.
 
     Runs the same checks as the Cassis GitHub PR check (YAML parsing,
-    round-trip, import validation). When the checkout is bound to a project
+    round-trip, import validation), then prints advisory quality warnings
+    (unassigned tables, broken joins/metrics, missing descriptions) for a
+    tree that parsed. When the checkout is bound to a project
     (``project.yml``, ``--project``, or ``CASSIS_PROJECT_ID``), the tree is
     additionally cross-checked against the project's source schema; unmatched
-    references print as warnings and never fail the check. Exits 0 when valid,
-    1 when validation fails, 2 on usage errors, 3 on transport/API errors.
+    references print as warnings too. Warnings never fail the check or change
+    the exit code. Exits 0 when valid, 1 when validation fails, 2 on usage
+    errors, 3 on transport/API errors.
     """
     api_key = _require_api_key(api_key)
     files, base_path = _collect_tree(path, base_path)
@@ -114,13 +117,17 @@ def check(
         raise typer.Exit(EXIT_TRANSPORT) from exc
 
     warnings = result.get("warnings") or []
+    ref_warnings = [w for w in warnings if w.get("stage") == "references"]
+    # Everything else is the quality audit; bucketing by "not references" keeps
+    # a warning stage this CLI predates visible instead of silently dropped.
+    audit_warnings = [w for w in warnings if w.get("stage") != "references"]
     if json_output:
         typer.echo(json.dumps(result, indent=2))
     elif result["passed"]:
         typer.secho(f"✓ {result['summary']}", fg=typer.colors.GREEN)
         # Disambiguate silence: "no warnings" must never read as "references
         # verified" when the stage didn't run.
-        if project_id and result.get("references_checked") and not warnings:
+        if project_id and result.get("references_checked") and not ref_warnings:
             typer.secho("✓ Schema references resolve against the source schema.", fg=typer.colors.GREEN)
         elif project_id and not result.get("references_checked"):
             typer.secho(
@@ -135,14 +142,23 @@ def check(
             location = f"{base_path}/{finding.get('path')}: " if finding.get("path") else ""
             typer.echo(f"  {location}{finding.get('message', '')} ({finding.get('stage', '?')})")
 
-    if warnings and not json_output:
+    if ref_warnings and not json_output:
         typer.secho(
-            f"{len(warnings)} schema reference warning(s) — advisory, expected if the objects "
+            f"{len(ref_warnings)} schema reference warning(s) — advisory, expected if the objects "
             "haven't been built or synced yet:",
             fg=typer.colors.YELLOW,
             bold=True,
         )
-        for warning in warnings:
+        for warning in ref_warnings:
+            typer.secho(f"  {warning.get('message', '')}", fg=typer.colors.YELLOW)
+    if audit_warnings and not json_output:
+        # Same wording as `ontology test` so the two commands read alike.
+        typer.secho(
+            f"{len(audit_warnings)} ontology quality warning(s) — advisory, never fail the check:",
+            fg=typer.colors.YELLOW,
+            bold=True,
+        )
+        for warning in audit_warnings:
             typer.secho(f"  {warning.get('message', '')}", fg=typer.colors.YELLOW)
 
     raise typer.Exit(EXIT_OK if result["passed"] else EXIT_VALIDATION_FAILED)
