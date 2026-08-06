@@ -11,6 +11,14 @@ from cassis_cli import __version__
 DEFAULT_API_URL = "https://app.getcassis.com"
 TIMEOUT_SECONDS = 60.0
 
+# Whole-tree endpoints (check, fmt, import) parse and re-serialize every file
+# server-side, so their duration scales with the ontology: a few hundred files
+# is tens of seconds of pure CPU, and the 60s default cut real runs off. The
+# ceiling is deliberately far above what the edge allows (CloudFront's
+# origin_read_timeout, see infra) — a client-side timeout should never be the
+# thing that reports a slow server as "unreachable".
+ONTOLOGY_TREE_TIMEOUT_SECONDS = 300.0
+
 USER_AGENT = f"cassis-cli/{__version__}"
 
 # Response header the CI endpoints set to the newest cassis-cli on PyPI.
@@ -149,7 +157,7 @@ def post_ontology_check(
     else:
         url = api_url.rstrip("/") + "/api/ci/ontology-check"
     try:
-        with _client(transport=transport) as client:
+        with _client(timeout=ONTOLOGY_TREE_TIMEOUT_SECONDS, transport=transport) as client:
             response = client.post(
                 url,
                 json={"files": files},
@@ -190,7 +198,7 @@ def post_ontology_import(
     if label is not None:
         body["label"] = label
     try:
-        with _client(transport=transport) as client:
+        with _client(timeout=ONTOLOGY_TREE_TIMEOUT_SECONDS, transport=transport) as client:
             response = client.post(
                 url,
                 json=body,
@@ -620,7 +628,7 @@ def post_ontology_fmt(
     """POST the ontology tree to /api/ci/ontology-fmt and return the response body."""
     url = api_url.rstrip("/") + "/api/ci/ontology-fmt"
     try:
-        with _client(transport=transport) as client:
+        with _client(timeout=ONTOLOGY_TREE_TIMEOUT_SECONDS, transport=transport) as client:
             response = client.post(
                 url,
                 json={"files": files},
