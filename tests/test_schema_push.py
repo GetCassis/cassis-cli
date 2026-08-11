@@ -84,15 +84,18 @@ class TestSchemaPushCommand:
         assert result.exit_code == 0
         assert "no changes" in result.output
 
-    def test_push_no_wait(self, repo, ddl_file, monkeypatch):
+    def test_push_rejects_removed_no_wait_flag(self, repo, ddl_file, monkeypatch):
+        # `--no-wait` was removed when DDL parsing moved into the detection run:
+        # a fire-and-forget push could exit 0 on a schema that never parsed, so
+        # exit 0 must mean "parsed AND applied" — which requires waiting.
         _mock_api(monkeypatch, _start_handler)
 
         result = runner.invoke(
             app, ["schema", "push", str(ddl_file), "--path", str(repo), "--api-key", "sk-k6-test", "--no-wait"]
         )
 
-        assert result.exit_code == 0
-        assert "Detection run started" in result.output
+        assert result.exit_code != 0
+        assert "No such option" in result.output
 
     def test_push_json_output(self, repo, ddl_file, monkeypatch):
         _mock_api(monkeypatch, _start_handler, _completed_handler())

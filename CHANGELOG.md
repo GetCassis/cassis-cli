@@ -3,6 +3,24 @@
 Versions match the releases on [PyPI](https://pypi.org/project/cassis-cli/); dates are the
 PyPI upload date.
 
+## 1.5.0 (2026-08-11)
+
+### Added
+
+- `cassis issues`: triage the issues Cassis raised on the project from the terminal.
+  `issues list` (filter with `--status`, `--impact`, `--cause`), `issues show <id>` for the
+  diagnosis, suggested action and occurrences, `issues evidence <id> <occurrence-id>` for
+  what the agent saw, and `issues resolve` / `dismiss` / `reopen` to change the status.
+
+### Changed
+
+- `schema push` always waits for the detection run and exits 0 only when the run
+  completed — i.e. the DDL parsed and the schema was applied. The `--no-wait` flag is
+  removed: the server now parses the DDL inside the detection run (large files no longer
+  time out the upload request), so a fire-and-forget push could report success for a
+  schema that never parsed. A parse error surfaces as a failed run (exit 1) with the
+  parser's message.
+
 ## 1.4.1 (2026-08-06)
 
 ### Fixed

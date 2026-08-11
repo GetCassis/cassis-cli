@@ -175,8 +175,7 @@ def push(
         envvar="CASSIS_BASE_PATH",
         help="Repository directory the ontology is exported under (the project's git-sync Path setting).",
     ),
-    wait: bool = typer.Option(True, "--wait/--no-wait", help="Wait for the detection run to complete."),
-    poll_interval: float = typer.Option(5.0, "--poll-interval", help="Seconds between polls with --wait."),
+    poll_interval: float = typer.Option(5.0, "--poll-interval", help="Seconds between polls."),
     timeout: float = typer.Option(600.0, "--timeout", help="Give up waiting after this many seconds."),
     json_output: bool = typer.Option(False, "--json", help="Print the run record as raw JSON."),
 ) -> None:
@@ -186,9 +185,14 @@ def push(
     project's complete source schema. Cassis diffs it against the ontology:
     added, dropped, and changed objects appear in Ontology > Review > Data
     source for approval. Re-uploading a corrected DDL supersedes the previous
-    one. Only works on DDL-only projects (no warehouse connection). Exits 0 on
-    success, 1 on a failed detection run, 2 on usage errors, 3 on transport/API
-    errors or a --wait timeout.
+    one. Only works on DDL-only projects (no warehouse connection).
+
+    Always waits for the detection run to finish: the server parses the DDL
+    inside the run (a large file takes a while, and an unparseable one fails
+    the run rather than the upload request), so exit 0 means the schema parsed
+    AND was applied — there is no fire-and-forget mode. Exits 0 on success, 1
+    on a failed detection run, 2 on usage errors, 3 on transport/API errors or
+    a timeout.
     """
     api_key = require_api_key(api_key)
     project_id = resolve_project_id(project_id, path / base_path)
@@ -217,11 +221,6 @@ def push(
 
     run_id = run["run_id"]
     typer.echo(f"Detection run started: {run_id}")
-
-    if not wait:
-        if json_output:
-            typer.echo(json.dumps(run, indent=2))
-        raise typer.Exit(EXIT_OK)
 
     run = _wait_for_detection_run(
         api_url=api_url,

@@ -618,6 +618,133 @@ def post_eval_run_cancel(
         raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
 
 
+class IssueNotFoundError(ApiError):
+    """The project has no issue (or occurrence) with this id."""
+
+
+def _get_issue_json(
+    url: str,
+    api_key: str,
+    transport: Optional[httpx.BaseTransport],
+    *,
+    params: Optional[dict[str, str]] = None,
+    not_found_message: Optional[str] = None,
+) -> Any:
+    """GET an issues URL with the shared error mapping."""
+    try:
+        with _client(transport=transport) as client:
+            response = client.get(url, params=params, headers={"Authorization": f"Bearer {api_key}"})
+    except httpx.HTTPError as exc:
+        raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
+
+    if response.status_code == 401:
+        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+    # Exact-match wire contract with the issue endpoints' 404 detail (see the
+    # issue routes in backend/app/endpoints/ci.py): it distinguishes a missing
+    # issue or occurrence (exit 1) from a project-scope 404 (exit 3).
+    if response.status_code == 404 and not_found_message and _detail_or_text(response) == "Issue not found":
+        raise IssueNotFoundError(not_found_message)
+    if response.status_code in (403, 404):
+        raise _project_scope_error(response)
+    if response.status_code >= 400:
+        raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
+    return _parse_json_response(response, url)
+
+
+def get_issues(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    status: Optional[str] = None,
+    impact: Optional[str] = None,
+    cause: Optional[str] = None,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> list[dict[str, Any]]:
+    """GET /api/ci/projects/{project_id}/issues and return the issue list."""
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/issues"
+    params = {key: value for key, value in (("status", status), ("impact", impact), ("cause", cause)) if value}
+    result = _get_issue_json(url, api_key, transport, params=params)
+    if not isinstance(result, list) or not all(isinstance(issue, dict) and "id" in issue for issue in result):
+        raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
+    return result
+
+
+def get_issue(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    issue_id: str,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> dict[str, Any]:
+    """GET /api/ci/projects/{project_id}/issues/{issue_id} and return the issue with its occurrences."""
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/issues/{issue_id}"
+    result = _get_issue_json(
+        url,
+        api_key,
+        transport,
+        not_found_message=f"No issue {issue_id} in this project (or occurrence not found).",
+    )
+    if not isinstance(result, dict) or "id" not in result:
+        raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
+    return result
+
+
+def get_issue_evidence(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    issue_id: str,
+    occurrence_id: str,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> dict[str, Any]:
+    """GET the evidence of one occurrence and return it."""
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/issues/{issue_id}/occurrences/{occurrence_id}/evidence"
+    result = _get_issue_json(
+        url,
+        api_key,
+        transport,
+        not_found_message=f"No issue {issue_id} in this project (or occurrence not found).",
+    )
+    if not isinstance(result, dict):
+        raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
+    return result
+
+
+def post_issue_status(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    issue_id: str,
+    status: str,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> dict[str, Any]:
+    """POST /api/ci/projects/{project_id}/issues/{issue_id}/status and return the updated issue."""
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/issues/{issue_id}/status"
+    try:
+        with _client(transport=transport) as client:
+            response = client.post(url, json={"status": status}, headers={"Authorization": f"Bearer {api_key}"})
+    except httpx.HTTPError as exc:
+        raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
+
+    if response.status_code == 401:
+        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+    # Same exact-match wire contract as the issue GETs above.
+    if response.status_code == 404 and _detail_or_text(response) == "Issue not found":
+        raise IssueNotFoundError(f"No issue {issue_id} in this project (or occurrence not found).")
+    if response.status_code in (403, 404):
+        raise _project_scope_error(response)
+    if response.status_code >= 400:
+        raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
+    result = _parse_json_response(response, url)
+    if not isinstance(result, dict) or "status" not in result:
+        raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
+    return result
+
+
 def post_ontology_fmt(
     *,
     api_url: str,

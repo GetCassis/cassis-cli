@@ -13,9 +13,10 @@ Run Cassis actions from your CI pipelines:
 - `cassis ontology test` runs individual questions through the text-to-SQL agent using your local ontology files, so you can check that a change actually works (e.g. a new column gets picked) — where `eval run` only checks for regressions on existing eval cases.
 - `cassis eval add-case` adds a gold question/SQL case to the project's eval suite — after fixing an ontology issue, add the question users were failing on so `eval run` guards it from regressing.
 - `cassis eval list-cases` and `cassis eval delete-case` maintain the suite: list the current cases with their ids, and prune one that is stale or wrong (e.g. its gold SQL encodes a definition the ontology has since changed).
-- `cassis schema push` uploads a DDL file to detect source-schema changes on a DDL-only project (same as the webapp's "Update from DDL" button): Cassis diffs the DDL against the ontology and surfaces added, dropped, and changed objects in Ontology > Review > Data source for approval. Waits for completion by default; `--no-wait` returns immediately.
+- `cassis schema push` uploads a DDL file to detect source-schema changes on a DDL-only project (same as the webapp's "Update from DDL" button): Cassis diffs the DDL against the ontology and surfaces added, dropped, and changed objects in Ontology > Review > Data source for approval. Waits for the detection run to finish and exits 0 only when it completed — the schema is stored and applied atomically with run completion, so exit 0 means the DDL parsed and the project now uses it.
 - `cassis projects list` lists the projects your API key can reach — id (what `--project` and `CASSIS_PROJECT_ID` take), name, published ontology version, and data-source dialect — so a pipeline or agent can discover the project id from the terminal instead of fishing it out of a webapp URL.
 - `cassis status` shows the project's published version (number, label, git commit), whether unpublished changes await publication, the git-sync binding, and how your local git HEAD relates to the published commit (in sync / N commits ahead / diverged). `cassis status --watch` polls until the published commit matches your local HEAD — e.g. right after merging a PR whose CI publishes the ontology — instead of watching the GitHub Actions tab.
+- `cassis issues` triages the issues Cassis raised on the project — what it found wrong while answering questions (an ontology gap, missing data) — without leaving the checkout: `issues list` (filterable by status, impact and cause), `issues show <id>` for the diagnosis, suggested action and the occurrences behind it, `issues evidence <id> <occurrence-id>` for what the agent actually saw, and `issues resolve` / `dismiss` / `reopen` once you've acted on it.
 - `cassis verify` runs the full local gate in one verb — `ontology fmt --check`, `ontology check`, `eval run` — stopping at the first failure. One command in a checkout ("is this change safe to merge?"), one job in CI. `--no-eval` skips the eval suite.
 
 ## Install
@@ -38,7 +39,7 @@ The ontology tree under `<base-path>` (default `cassis/`) is:
 
 1. Create an API key in Cassis under **Organization settings → API keys** (keys start with `sk-k6-`).
 2. Store it as a CI secret and expose it as `CASSIS_API_KEY`.
-3. For `pull`, `upload`, `schema pull`, `eval run`, `ontology test`, and the `eval` case commands (`add-case`, `list-cases`, `delete-case`): the project ID (UUID) is taken from `<base-path>/project.yml` in the checkout (written by `pull` and by publishing) — so once a repo is pulled you don't need to pass it. To override, or before the first pull, set `CASSIS_PROJECT_ID` or pass `--project` (find the UUID with `cassis projects list`, or in the project's URL). `ontology check` uses the same resolution but treats it as optional: unbound checkouts get the project-less validation (no schema reference warnings).
+3. For `pull`, `upload`, `schema pull`, `eval run`, `ontology test`, the `eval` case commands (`add-case`, `list-cases`, `delete-case`), and the `issues` commands: the project ID (UUID) is taken from `<base-path>/project.yml` in the checkout (written by `pull` and by publishing) — so once a repo is pulled you don't need to pass it. To override, or before the first pull, set `CASSIS_PROJECT_ID` or pass `--project` (find the UUID with `cassis projects list`, or in the project's URL). `ontology check` uses the same resolution but treats it as optional: unbound checkouts get the project-less validation (no schema reference warnings).
 
 ## Usage
 
@@ -100,14 +101,24 @@ cassis eval delete-case 019f0000-0000-7000-8000-0000000000ca --project ...
 # Pull the source schema into <base-path>/.schema.json (gitignored local snapshot):
 cassis schema pull
 
-# Push a DDL file to detect source-schema changes (DDL-only projects):
+# Push a DDL file to detect source-schema changes (DDL-only projects);
+# exits 0 only once the run completed and the schema is applied:
 cassis schema push schema.sql
-
-# Push and return immediately (poll in the webapp):
-cassis schema push schema.sql --no-wait
 
 # List the projects the API key can reach (id, name, published version, dialect):
 cassis projects list
+
+# Triage the issues Cassis raised (filter by --status/--impact/--cause; --json for raw output):
+cassis issues list --status open
+cassis issues show 019f0000-0000-7000-8000-0000000000e1
+
+# Read what the agent saw for one occurrence (ids from `issues show`):
+cassis issues evidence 019f0000-0000-7000-8000-0000000000e1 019f0000-0000-7000-8000-0000000000c1
+
+# Close the loop once the fix is published (or reopen):
+cassis issues resolve 019f0000-0000-7000-8000-0000000000e1
+cassis issues dismiss 019f0000-0000-7000-8000-0000000000e1
+cassis issues reopen 019f0000-0000-7000-8000-0000000000e1
 
 # Published version vs local checkout (add --watch to poll until your merge is published):
 cassis status
@@ -125,7 +136,7 @@ Configuration (flags take precedence over env vars):
 | `--api-key` | `CASSIS_API_KEY` | — (required)                |
 | `--api-url` | `CASSIS_API_URL` | `https://app.getcassis.com` |
 | `--base-path` | `CASSIS_BASE_PATH` | `cassis` — must match the project's git-sync "Path" setting |
-| `--project` (check, pull, upload, schema pull, eval run, eval add-case, eval list-cases, eval delete-case, test) | `CASSIS_PROJECT_ID` | the id in `<base-path>/project.yml` (required before the first pull; `check` alone falls back to the project-less validation when unbound) |
+| `--project` (check, pull, upload, schema pull, eval run, eval add-case, eval list-cases, eval delete-case, test, issues) | `CASSIS_PROJECT_ID` | the id in `<base-path>/project.yml` (required before the first pull; `check` alone falls back to the project-less validation when unbound) |
 
 `cassis eval run` also accepts `--case <id>` (repeatable; run only the named
 cases, ids from `eval list-cases` or `add-case`), `--label` (run label in the Evals page; defaults
@@ -155,7 +166,7 @@ cassis ontology fmt --check
 | Code | Meaning                                                                        |
 | ---- | ------------------------------------------------------------------------------ |
 | 0    | Ontology is valid (check) / pulled (pull) / uploaded (upload) / eval run completed all-passed (eval run) / every probe completed (test — whatever its outcome; probes are informational, don't gate CI on them) |
-| 1    | Validation failed (check: findings printed; upload: nothing imported; eval run: invalid tree, failed cases, or failed/cancelled run; test: invalid tree or a probe failed; add-case: duplicate question or gold SQL that does not run; delete-case: no such case in the project) |
+| 1    | Validation failed (check: findings printed; upload: nothing imported; eval run: invalid tree, failed cases, or failed/cancelled run; test: invalid tree or a probe failed; add-case: duplicate question or gold SQL that does not run; delete-case: no such case in the project; issues: no such issue or occurrence in the project) |
 | 2    | Usage error (missing API key or project, no ontology directory, unreadable file, tree over the size limits) |
 | 3    | Transport/API error (unreachable API, invalid key, inaccessible project, unexpected response), another run already active, out of credits, or `--timeout` reached |
 
