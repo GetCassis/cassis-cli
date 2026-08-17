@@ -1,4 +1,5 @@
 import json
+import subprocess
 
 import httpx
 import pytest
@@ -25,6 +26,19 @@ def _mock_api(monkeypatch, handler):
         return original(**kwargs)
 
     monkeypatch.setattr("cassis_cli.ontology.get_ontology_export", patched)
+
+
+def _git(root, *args):
+    subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+
+
+def _init_repo(root):
+    """git repo with everything currently on disk committed."""
+    _git(root, "init", "-q")
+    _git(root, "config", "user.email", "test@example.com")
+    _git(root, "config", "user.name", "Test")
+    _git(root, "add", "-A")
+    _git(root, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "init", "--allow-empty")
 
 
 def _export_handler(request):
@@ -73,12 +87,13 @@ class TestOntologyPullCommand:
         assert result.exit_code == 0, result.output
         assert (tmp_path / "cassis" / "AGENTS.md").exists()
 
-    def test_pull_prunes_stale_yaml(self, tmp_path, monkeypatch):
+    def test_pull_prunes_committed_stale_yaml_and_names_it(self, tmp_path, monkeypatch):
         stale = tmp_path / "cassis" / "tables" / "public" / "old_table.yml"
         stale.parent.mkdir(parents=True)
         stale.write_text("table_name: old_table\n")
         keeper = tmp_path / "cassis" / "notes.txt"  # non-YAML files are never touched
         keeper.write_text("keep me")
+        _init_repo(tmp_path)
         _mock_api(monkeypatch, _export_handler)
 
         result = runner.invoke(
@@ -88,7 +103,81 @@ class TestOntologyPullCommand:
         assert result.exit_code == 0, result.output
         assert not stale.exists()
         assert keeper.exists()
+        assert "cassis/tables/public/old_table.yml" in result.output  # deletion is named
         assert "1 stale files deleted" in result.output
+
+    def test_pull_keeps_untracked_local_file(self, tmp_path, monkeypatch):
+        # Regression for #27: an untracked metric file must survive a pull.
+        _init_repo(tmp_path)
+        untracked = tmp_path / "cassis" / "metrics" / "my_new_metric.yml"
+        untracked.parent.mkdir(parents=True)
+        untracked.write_text("name: my_new_metric\n")
+        _mock_api(monkeypatch, _export_handler)
+
+        result = runner.invoke(
+            app, ["ontology", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert untracked.exists()
+        assert untracked.read_text() == "name: my_new_metric\n"
+        assert "cassis/metrics/my_new_metric.yml (untracked in git)" in result.output
+        assert "deleted" not in result.output
+
+    def test_pull_keeps_modified_tracked_file(self, tmp_path, monkeypatch):
+        modified = tmp_path / "cassis" / "metrics" / "revenue.yml"
+        modified.parent.mkdir(parents=True)
+        modified.write_text("name: revenue\n")
+        _init_repo(tmp_path)
+        modified.write_text("name: revenue\ndescription: uncommitted edit\n")
+        _mock_api(monkeypatch, _export_handler)
+
+        result = runner.invoke(
+            app, ["ontology", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert modified.read_text() == "name: revenue\ndescription: uncommitted edit\n"
+        assert "cassis/metrics/revenue.yml (locally modified)" in result.output
+
+    def test_pull_outside_git_repo_never_prunes(self, tmp_path, monkeypatch):
+        stale = tmp_path / "cassis" / "old.yml"
+        stale.parent.mkdir(parents=True)
+        stale.write_text("a: 1\n")
+        _mock_api(monkeypatch, _export_handler)
+
+        result = runner.invoke(
+            app, ["ontology", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert stale.exists()
+        assert "cassis/old.yml (not in a git repository)" in result.output
+
+    def test_pull_prunes_committed_legacy_domain_files(self, tmp_path, monkeypatch):
+        # YAML-to-Markdown migration: committed _domain.yml is pruned and the
+        # migration notice names the change.
+        legacy = tmp_path / "cassis" / "domains" / "sales" / "_domain.yml"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text("display_name: Sales\n")
+        _init_repo(tmp_path)
+
+        def handler(request):
+            files = dict(_EXPORT_FILES)
+            files["domains/sales/README.md"] = "# Sales\n"
+            return httpx.Response(200, json={"files": files})
+
+        _mock_api(monkeypatch, handler)
+
+        result = runner.invoke(
+            app, ["ontology", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert not legacy.exists()
+        assert (tmp_path / "cassis" / "domains" / "sales" / "README.md").exists()
+        assert "cassis/domains/sales/_domain.yml" in result.output
+        assert "Migrated 1 domain(s)" in result.output
 
     def test_no_prune_keeps_stale_yaml(self, tmp_path, monkeypatch):
         stale = tmp_path / "cassis" / "old.yml"
@@ -129,6 +218,25 @@ class TestOntologyPullCommand:
         payload = json.loads(result.output)
         assert payload["written"] == sorted(_EXPORT_FILES)
         assert payload["deleted"] == []
+        assert payload["kept"] == []
+
+    def test_json_output_reports_kept_files(self, tmp_path, monkeypatch):
+        _init_repo(tmp_path)
+        untracked = tmp_path / "cassis" / "metrics" / "wip.yml"
+        untracked.parent.mkdir(parents=True)
+        untracked.write_text("name: wip\n")
+        _mock_api(monkeypatch, _export_handler)
+
+        result = runner.invoke(
+            app,
+            ["ontology", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test", "--json"],
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["deleted"] == []
+        assert payload["kept"] == [{"path": "metrics/wip.yml", "reason": "untracked in git"}]
+        assert untracked.exists()
 
     def test_traversal_path_from_server_is_refused(self, tmp_path, monkeypatch):
         def handler(request):

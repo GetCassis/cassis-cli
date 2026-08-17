@@ -134,7 +134,7 @@ def ensure_gitignored(ontology_dir: Path) -> None:
     gitignore = ontology_dir / ".gitignore"
     try:
         existing = gitignore.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as _exc:  # `as` keeps black from stripping the parens (3.14-only syntax)
+    except (OSError, UnicodeDecodeError):
         existing = ""
     if SNAPSHOT_FILENAME in existing.splitlines():
         return

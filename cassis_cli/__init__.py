@@ -1,4 +1,7 @@
-"""Cassis CLI — run Cassis actions from your CI pipelines."""
+"""Validate, test and evaluate your ontology from your terminal, then publish it.
+
+The same commands gate your pull requests in CI.
+"""
 
 from importlib.metadata import PackageNotFoundError, version
 

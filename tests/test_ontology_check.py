@@ -224,6 +224,31 @@ class TestOntologyCheckCommand:
         assert result.exit_code == 2
         assert "too large" in result.output
 
+    def test_size_gate_counts_path_bytes_like_the_server(self, repo, monkeypatch):
+        """The byte total includes path bytes, matching the server's _validate_tree_files.
+
+        The repo fixture's tree content alone fits under the patched cap; only
+        path + content bytes push it over — content-only counting (the old
+        behavior) would let this tree through and 422 server-side.
+        """
+        from cassis_cli.common import collect_files
+
+        files = collect_files(repo / "cassis")
+        content_bytes = sum(len(c.encode()) for c in files.values())
+        with_paths = sum(len(p.encode()) + len(c.encode()) for p, c in files.items())
+        assert with_paths > content_bytes
+        monkeypatch.setattr("cassis_cli.common.MAX_TOTAL_BYTES", content_bytes)
+
+        def handler(request):  # any request reaching the network is a test failure
+            raise AssertionError("no request should be sent for an oversized tree")
+
+        _mock_api(monkeypatch, handler)
+
+        result = runner.invoke(app, ["ontology", "check", str(repo), "--api-key", "sk-k6-test"])
+
+        assert result.exit_code == 2
+        assert "too large" in result.output
+
 
 class TestPostOntologyCheck:
     def test_auth_error_on_401(self):

@@ -28,6 +28,7 @@ from cassis_cli.common import (
 )
 from cassis_cli.common import collect_files as _collect_files
 from cassis_cli.common import collect_tree as _collect_tree
+from cassis_cli.common import git_file_states as _git_file_states
 from cassis_cli.common import is_legacy_domain_file as _is_legacy_domain_file
 from cassis_cli.common import require_api_key as _require_api_key
 from cassis_cli.common import resolve_project_id as _resolve_project_id
@@ -197,7 +198,11 @@ def pull(
     prune: bool = typer.Option(
         True,
         "--prune/--no-prune",
-        help="Delete local ontology files that no longer exist in the project's ontology (default: prune).",
+        help=(
+            "Delete local ontology files that no longer exist in the project's ontology "
+            "(default: prune). Only files that are tracked and unmodified in git are "
+            "deleted; untracked or locally modified files are always kept and reported."
+        ),
     ),
     json_output: bool = typer.Option(False, "--json", help="Print a JSON summary of written/deleted files."),
 ) -> None:
@@ -205,7 +210,9 @@ def pull(
 
     Writes the ontology tree under the export path (full sync: files are
     overwritten and, unless --no-prune, stale local ontology files are deleted,
-    so the checkout ends up matching the project exactly). Review the changes with
+    so the checkout ends up matching the project exactly). Pruning never touches
+    files git could not restore: untracked or locally modified files are kept
+    and listed, and every deleted path is named. Review the changes with
     git diff before committing. Exits 0 on success, 2 on usage errors, 3 on
     transport/API errors.
     """
@@ -243,15 +250,38 @@ def pull(
         written.append(rel)
 
     deleted: list[str] = []
+    kept: list[dict[str, str]] = []
     if prune and ontology_dir.is_dir():
         local = _collect_files(ontology_dir)
-        for rel in sorted(set(local) - set(files)):
-            try:
-                (ontology_dir / rel).unlink()
-            except OSError as exc:
-                typer.secho(f"Cannot delete {ontology_dir / rel}: {exc}", fg=typer.colors.RED, err=True)
-                raise typer.Exit(EXIT_USAGE) from exc
-            deleted.append(rel)
+        stale = sorted(set(local) - set(files))
+        if stale:
+            # Only delete what git can restore. An untracked or locally
+            # modified file is user work Cassis has never seen — pruning it
+            # would be unrecoverable data loss (#27).
+            states = _git_file_states(ontology_dir)
+            to_delete: list[str] = []
+            if states is None:
+                kept = [{"path": rel, "reason": "not in a git repository"} for rel in stale]
+            else:
+                tracked, dirty = states
+                for rel in stale:
+                    if rel not in tracked:
+                        kept.append({"path": rel, "reason": "untracked in git"})
+                    elif rel in dirty:
+                        kept.append({"path": rel, "reason": "locally modified"})
+                    else:
+                        to_delete.append(rel)
+            if to_delete and not json_output:
+                typer.echo(f"Deleting {len(to_delete)} stale ontology file(s):")
+                for rel in to_delete:
+                    typer.echo(f"  {base_path}/{rel}")
+            for rel in to_delete:
+                try:
+                    (ontology_dir / rel).unlink()
+                except OSError as exc:
+                    typer.secho(f"Cannot delete {ontology_dir / rel}: {exc}", fg=typer.colors.RED, err=True)
+                    raise typer.Exit(EXIT_USAGE) from exc
+                deleted.append(rel)
 
     # Managed modeling guide: refresh AGENTS.md so a repo-aware agent loads
     # current Cassis doctrine. Not part of the ontology tree (YAML-only), so it
@@ -266,14 +296,31 @@ def pull(
         _warn_newer_guide(base_path)
 
     if json_output:
-        typer.echo(json.dumps({"written": written, "deleted": deleted, "guide_written": guide_written}, indent=2))
+        typer.echo(
+            json.dumps(
+                {"written": written, "deleted": deleted, "kept": kept, "guide_written": guide_written},
+                indent=2,
+            )
+        )
     else:
         summary = f"✓ Pulled {len(written)} files into {ontology_dir}"
         if deleted:
-            summary += f" ({len(deleted)} stale files deleted)"
+            summary += f" ({len(deleted)} stale files deleted, listed above)"
         if guide_written:
             summary += f"; wrote {base_path}/{GUIDE_FILENAME}"
         typer.secho(f"{summary}.", fg=typer.colors.GREEN)
+        if kept:
+            typer.secho(
+                f"Kept {len(kept)} local file(s) not in the project ontology "
+                "(only files tracked and unmodified in git are pruned):",
+                fg=typer.colors.YELLOW,
+            )
+            for entry in kept:
+                typer.secho(f"  {base_path}/{entry['path']} ({entry['reason']})", fg=typer.colors.YELLOW)
+            typer.secho(
+                "  Commit them if they are intentional, or delete them manually.",
+                fg=typer.colors.YELLOW,
+            )
         migrated = sum(1 for rel in deleted if _is_legacy_domain_file(rel))
         if migrated:
             typer.secho(

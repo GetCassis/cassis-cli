@@ -3,6 +3,25 @@
 Versions match the releases on [PyPI](https://pypi.org/project/cassis-cli/); dates are the
 PyPI upload date.
 
+## 1.5.1 (2026-08-17)
+
+### Changed
+
+- Raise the tree ceilings on `check`, `fmt`, `upload`, `eval run` and `test` from
+  2,000 files / 5 MB to 20,000 files / 100 MB, sized for ontologies of roughly
+  10,000 modeled tables (the old limits rejected trees Cassis itself exported above
+  ~1,400 tables). The size gate now counts path bytes plus content bytes, matching
+  the server exactly. The new limits apply end to end once the server ships the
+  matching raise (the server's 422 remains the backstop against older servers).
+
+### Fixed
+
+- `ontology pull` no longer deletes untracked or locally modified files. Pruning is now
+  restricted to files that git can restore (tracked and unmodified); anything else is kept
+  and listed with the reason, and every deleted path is printed before deletion. Outside a
+  git repository, pruning is skipped entirely. The `--json` summary gains a `kept` list
+  (`[{"path", "reason"}]`).
+
 ## 1.5.0 (2026-08-11)
 
 ### Added

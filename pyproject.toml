@@ -1,11 +1,11 @@
 [project]
 name = "cassis-cli"
-version = "1.5.0"
-description = "Cassis CLI — run Cassis actions (ontology validation, upload and publish) from your CI pipelines"
+version = "1.5.1"
+description = "Validate, test and evaluate your Cassis ontology from your terminal, then publish it"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Cassis", email = "tech.admin@getcassis.com" }]
-keywords = ["cassis", "ontology", "ci", "text-to-sql"]
+keywords = ["cassis", "ontology", "cli", "ci", "text-to-sql"]
 classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Environment :: Console",
@@ -43,3 +43,10 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.black]
+# The package ships for Python >=3.10 (see requires-python above): formatting
+# must target the floor, or black under the monorepo's 3.14 rewrites syntax
+# into 3.14-only forms (e.g. stripping parens from multi-exception `except`).
+line-length = 120
+target-version = ["py310"]

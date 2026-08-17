@@ -14,7 +14,10 @@ from cassis_cli.verify import verify
 
 app = typer.Typer(
     no_args_is_help=True,
-    help="Cassis CLI — run Cassis actions from your CI pipelines.",
+    help=(
+        "Cassis CLI: validate, test and evaluate your ontology from your terminal, "
+        "then publish it. The same commands gate your pull requests in CI."
+    ),
 )
 app.add_typer(ontology_app, name="ontology")
 app.add_typer(eval_app, name="eval")

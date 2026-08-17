@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Optional
 from uuid import UUID
@@ -20,10 +22,12 @@ EXIT_USAGE = 2
 EXIT_TRANSPORT = 3
 
 # Request ceilings of the /api/ci file-tree endpoints, mirrored so oversized
-# trees fail fast with a clear message before any upload. Source of truth:
+# trees fail fast with a clear message before any upload. Sized for ~10,000
+# modeled tables (a 6,000-table tree is ~8,600 files / ~60 MB). Source of
+# truth: backend/app/services/ontology_check.py, enforced by
 # backend/app/schemas/ci.py (the server's 422 remains the backstop).
-MAX_FILES = 2000
-MAX_TOTAL_BYTES = 5 * 1024 * 1024
+MAX_FILES = 20_000
+MAX_TOTAL_BYTES = 100 * 1024 * 1024
 
 
 def is_ontology_file(rel_path: str) -> bool:
@@ -39,6 +43,42 @@ def is_ontology_file(rel_path: str) -> bool:
     if rel_path.endswith((".yml", ".yaml")):
         return True
     return rel_path.startswith("domains/") and rel_path.endswith("/README.md")
+
+
+def git_file_states(directory: Path) -> Optional[tuple[set[str], set[str]]]:
+    """(tracked, dirty) path sets for files under ``directory``, relative to it.
+
+    ``tracked`` is every git-tracked file below the directory; ``dirty`` the
+    subset whose working-tree content differs from the index (modified or
+    missing). Returns ``None`` when the directory is not inside a git work tree
+    or git is unavailable — callers must then treat every file as
+    unrecoverable and refuse to delete it.
+    """
+    # GIT_OPTIONAL_LOCKS=0: read-only queries must not take the index lock
+    # (and fail) when another git process is running.
+    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
+    try:
+        tracked_proc = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=directory,
+            env=env,
+            capture_output=True,
+            check=True,
+            text=True,
+        )
+        dirty_proc = subprocess.run(
+            ["git", "ls-files", "-z", "--modified"],
+            cwd=directory,
+            env=env,
+            capture_output=True,
+            check=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError, UnicodeDecodeError):
+        return None
+    tracked = {p for p in tracked_proc.stdout.split("\0") if p}
+    dirty = {p for p in dirty_proc.stdout.split("\0") if p}
+    return tracked, dirty
 
 
 def is_legacy_domain_file(rel_path: str) -> bool:
@@ -84,7 +124,7 @@ def read_project_id_from_dir(ontology_dir: Path) -> Optional[str]:
     """Return the ``project_id`` recorded in ``<ontology_dir>/project.yml``, or None."""
     try:
         text = (ontology_dir / "project.yml").read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as _exc:  # `as` keeps black from stripping the parens (3.14-only syntax)
+    except (OSError, UnicodeDecodeError):
         return None
     for line in text.splitlines():
         match = _PROJECT_ID_LINE.match(line.strip())
@@ -171,7 +211,9 @@ def collect_tree(path: Path, base_path: str) -> "tuple[dict[str, str], str]":
         typer.secho(f"No ontology files found under {ontology_dir}.", fg=typer.colors.RED, err=True)
         raise typer.Exit(EXIT_USAGE)
 
-    total_bytes = sum(len(content.encode()) for content in files.values())
+    # Count path bytes too, exactly like the server's _validate_tree_files —
+    # a tree accepted here must never come back as a server-side 422.
+    total_bytes = sum(len(rel.encode()) + len(content.encode()) for rel, content in files.items())
     if len(files) > MAX_FILES or total_bytes > MAX_TOTAL_BYTES:
         typer.secho(
             f"Ontology tree too large: {len(files)} files / {total_bytes / (1024 * 1024):.1f} MB "
