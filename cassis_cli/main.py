@@ -9,6 +9,7 @@ from cassis_cli.issues import app as issues_app
 from cassis_cli.ontology import app as ontology_app
 from cassis_cli.projects import app as projects_app
 from cassis_cli.schema import app as schema_app
+from cassis_cli.source_changes import app as source_changes_app
 from cassis_cli.status import status
 from cassis_cli.verify import verify
 
@@ -24,6 +25,7 @@ app.add_typer(eval_app, name="eval")
 app.add_typer(schema_app, name="schema")
 app.add_typer(projects_app, name="projects")
 app.add_typer(issues_app, name="issues")
+app.add_typer(source_changes_app, name="source-changes")
 app.command()(status)
 app.command()(verify)
 

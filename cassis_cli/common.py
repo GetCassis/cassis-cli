@@ -30,6 +30,17 @@ MAX_FILES = 20_000
 MAX_TOTAL_BYTES = 100 * 1024 * 1024
 
 
+def api_failure(exc: Exception) -> "typer.Exit":
+    """Print a transport/API error and return the transport exit code."""
+    typer.secho(str(exc), fg=typer.colors.RED, err=True)
+    return typer.Exit(EXIT_TRANSPORT)
+
+
+def one_line(value: object) -> str:
+    """Collapse a possibly-multiline value into one trimmed line for list rows."""
+    return str(value or "").replace("\n", " ").strip()
+
+
 def is_ontology_file(rel_path: str) -> bool:
     """Whether a base-relative path is an ontology file the server reads.
 

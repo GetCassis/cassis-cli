@@ -59,7 +59,7 @@ def _completed_handler(summary=None):
                 "status": "completed",
                 "source_kind": "ddl",
                 "trigger": "manual",
-                "summary": summary or {"total_changes": 2},
+                "summary": summary or {"reviewable_total": 2, "changes_created": 2},
             },
         )
 
@@ -74,15 +74,56 @@ class TestSchemaPushCommand:
 
         assert result.exit_code == 0, result.output
         assert "Detection run started" in result.output
-        assert "2 change(s) detected" in result.output
+        assert "2 change(s) to review" in result.output
+
+    def test_push_scope_flag_rides_the_request(self, repo, ddl_file, monkeypatch):
+        # Default: the upload speaks only for the schemas it contains
+        # (complete_source=false); --complete asserts the whole source.
+        seen: list = []
+
+        def handler(request):
+            seen.append(json.loads(request.content)["complete_source"])
+            return httpx.Response(
+                201, json={"run_id": _RUN_ID, "status": "running", "source_kind": "ddl", "trigger": "manual"}
+            )
+
+        _mock_api(monkeypatch, handler, _completed_handler())
+        default = runner.invoke(app, ["schema", "push", str(ddl_file), "--path", str(repo), "--api-key", "sk-k6-test"])
+        complete = runner.invoke(
+            app, ["schema", "push", str(ddl_file), "--complete", "--path", str(repo), "--api-key", "sk-k6-test"]
+        )
+
+        assert default.exit_code == 0 and complete.exit_code == 0
+        assert seen == [False, True]
 
     def test_push_no_changes(self, repo, ddl_file, monkeypatch):
-        _mock_api(monkeypatch, _start_handler, _completed_handler(summary={"total_changes": 0}))
+        _mock_api(monkeypatch, _start_handler, _completed_handler(summary={"reviewable_total": 0}))
 
         result = runner.invoke(app, ["schema", "push", str(ddl_file), "--path", str(repo), "--api-key", "sk-k6-test"])
 
         assert result.exit_code == 0
         assert "no changes" in result.output
+
+    def test_push_counts_changes_without_reviewable_total(self, repo, ddl_file, monkeypatch):
+        # Older servers' run summaries lack reviewable_total; the created/updated/
+        # reopened counters are the fallback.
+        summary = {"changes_created": 1, "changes_updated": 1, "changes_reopened": 1}
+        _mock_api(monkeypatch, _start_handler, _completed_handler(summary=summary))
+
+        result = runner.invoke(app, ["schema", "push", str(ddl_file), "--path", str(repo), "--api-key", "sk-k6-test"])
+
+        assert result.exit_code == 0
+        assert "3 change(s) to review" in result.output
+
+    def test_push_surfaces_partial_upload_suspicion(self, repo, ddl_file, monkeypatch):
+        summary = {"reviewable_total": 3, "partial_upload_suspected": 1}
+        _mock_api(monkeypatch, _start_handler, _completed_handler(summary=summary))
+
+        result = runner.invoke(app, ["schema", "push", str(ddl_file), "--path", str(repo), "--api-key", "sk-k6-test"])
+
+        assert result.exit_code == 0
+        assert "partial export" in result.output
+        assert "3 change(s) to review" in result.output
 
     def test_push_rejects_removed_no_wait_flag(self, repo, ddl_file, monkeypatch):
         # `--no-wait` was removed when DDL parsing moved into the detection run:

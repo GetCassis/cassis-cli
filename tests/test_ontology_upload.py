@@ -207,6 +207,21 @@ class TestPostOntologyImport:
                 transport=transport,
             )
 
+    def test_in_job_failure_error_body_raises_validation_error(self):
+        # The server runs the import as a background job and streams keepalives;
+        # a failure after the stream starts arrives as a 200 whose body carries
+        # only an ``error`` key (never the success shape).
+        transport = httpx.MockTransport(lambda request: httpx.Response(200, content=b'  {"error": "import blew up"}'))
+        with pytest.raises(UploadValidationError, match="import blew up"):
+            post_ontology_import(
+                api_url="https://example.com",
+                api_key="sk-k6-x",
+                project_id=PROJECT_ID,
+                files={"a.yml": "a: 1\n"},
+                publish=False,
+                transport=transport,
+            )
+
 
 OTHER_PROJECT_ID = "019f1111-1111-7111-8111-111111111111"
 

@@ -26,9 +26,10 @@ from cassis_cli.api import (
 from cassis_cli.common import (
     DEFAULT_BASE_PATH,
     EXIT_OK,
-    EXIT_TRANSPORT,
     EXIT_USAGE,
     EXIT_VALIDATION_FAILED,
+    api_failure,
+    one_line,
     require_api_key,
     resolve_project_id,
 )
@@ -81,18 +82,9 @@ def _validate_choice(value: Optional[str], allowed: "tuple[str, ...]", flag: str
     raise typer.Exit(EXIT_USAGE)
 
 
-def _api_failure(exc: ApiError) -> "typer.Exit":
-    typer.secho(str(exc), fg=typer.colors.RED, err=True)
-    return typer.Exit(EXIT_TRANSPORT)
-
-
 def _not_found_failure(exc: IssueNotFoundError) -> "typer.Exit":
     typer.secho(str(exc), fg=typer.colors.YELLOW, err=True)
     return typer.Exit(EXIT_VALIDATION_FAILED)
-
-
-def _one_line(value: Any) -> str:
-    return str(value or "").replace("\n", " ").strip()
 
 
 def _field(label: str, value: Any, *, blank_line: bool = False) -> None:
@@ -145,7 +137,7 @@ def list_issues(
             cause=cause,
         )
     except (AuthError, ApiError) as exc:
-        raise _api_failure(exc) from exc
+        raise api_failure(exc) from exc
 
     if json_output:
         typer.echo(json.dumps(issues, indent=2))
@@ -159,7 +151,7 @@ def list_issues(
         occurrences = issue.get("occurrence_count_cache") or 0
         typer.echo(
             f"{issue.get('id')}  {issue.get('impact')}  x{occurrences}  "
-            f"{issue.get('status')}  {_one_line(issue.get('title'))}"
+            f"{issue.get('status')}  {one_line(issue.get('title'))}"
         )
     raise typer.Exit(EXIT_OK)
 
@@ -188,14 +180,14 @@ def show(
     except IssueNotFoundError as exc:
         raise _not_found_failure(exc) from exc
     except (AuthError, ApiError) as exc:
-        raise _api_failure(exc) from exc
+        raise api_failure(exc) from exc
 
     if json_output:
         typer.echo(json.dumps(issue, indent=2))
         raise typer.Exit(EXIT_OK)
 
     occurrences = issue.get("occurrences") or []
-    typer.echo(f"{issue.get('id')}  {_one_line(issue.get('title'))}")
+    typer.echo(f"{issue.get('id')}  {one_line(issue.get('title'))}")
     typer.echo(
         f"{issue.get('status')}  {issue.get('impact')}  {issue.get('cause')}  "
         f"{issue.get('occurrence_count_cache', len(occurrences))} occurrence(s)"
@@ -208,7 +200,7 @@ def show(
         typer.echo("")
         typer.echo("Occurrences:")
         for occurrence in occurrences:
-            typer.echo(f"  {occurrence.get('id')}  {_one_line(occurrence.get('symptom'))}")
+            typer.echo(f"  {occurrence.get('id')}  {one_line(occurrence.get('symptom'))}")
     raise typer.Exit(EXIT_OK)
 
 
@@ -245,7 +237,7 @@ def evidence(
     except IssueNotFoundError as exc:
         raise _not_found_failure(exc) from exc
     except (AuthError, ApiError) as exc:
-        raise _api_failure(exc) from exc
+        raise api_failure(exc) from exc
 
     if json_output:
         typer.echo(json.dumps(record, indent=2))
@@ -281,7 +273,7 @@ def _set_status(
     except IssueNotFoundError as exc:
         raise _not_found_failure(exc) from exc
     except (AuthError, ApiError) as exc:
-        raise _api_failure(exc) from exc
+        raise api_failure(exc) from exc
 
     typer.secho(f"✓ Issue {issue_id} is now {issue.get('status', status)}.", fg=typer.colors.GREEN)
     raise typer.Exit(EXIT_OK)

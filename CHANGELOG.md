@@ -3,6 +3,50 @@
 Versions match the releases on [PyPI](https://pypi.org/project/cassis-cli/); dates are the
 PyPI upload date.
 
+## 1.6.0 (2026-08-21)
+
+### Added
+
+- `cassis source-changes list` and `cassis source-changes show`: read the project's Data
+  source review queue (schema drift Cassis detected — tables/columns added, removed,
+  renamed, retyped) from a checkout. `list` is paginated (`--limit`/`--offset`, `--status`,
+  `--json` prints the `{items, total}` page); `show` prints one change's impact references
+  and suggested edit. Read-only: reviewing stays in the webapp — fix headlessly by editing
+  the ontology files and opening a pull request. Needs the matching server-side support,
+  which ships with the Cassis release this version accompanies.
+- `cassis status` now reports pending Data source review items ("Source changes pending
+  review: N, M breaking") when the server provides them.
+
+### Changed
+
+- `ontology upload` now reports a server-side import failure with the server's
+  error message and a validation-failure exit code. The server runs the import
+  as a background job and streams keepalives while it runs; a failure after the
+  stream starts arrives in the response body rather than as an HTTP error.
+- `schema push` now treats the DDL file as a statement about only the schemas it
+  contains: a partial export (for example Snowflake's per-schema `GET_DDL`) adds or
+  updates those schemas without marking every table of the others as removed, and the
+  stored schema keeps carrying the untouched schemas. Pass the new `--complete` flag
+  when the file is the project's complete source schema, so schemas absent from it are
+  treated as dropped (the previous behavior). The scoping takes effect once the matching
+  server-side support is live — it ships with the Cassis release this version accompanies;
+  until then the server ignores it and keeps whole-source semantics. Note that the new
+  default then applies server-side to **all** clients: pushes from older CLI versions
+  (which cannot send `--complete`) become scoped too, so a workflow that relied on
+  omission to signal dropped schemas must upgrade and pass `--complete` to keep detecting
+  whole-schema drops.
+
+### Fixed
+
+- `schema push` now reports the number of changes the run queued for review. It read a
+  count field the server never sent, so every successful push printed "no changes" even
+  when the run created cards. It also prints a note when the server flags the upload as a
+  suspected partial export (the file drops most tables of a schema it contains).
+- `ontology pull` and `eval run` no longer time out client-side on very large
+  ontologies: both move whole ontology trees, but used the default 60-second request
+  budget instead of the 5-minute one the other tree endpoints get. Pulls of
+  multi-thousand-table projects were measured seconds from the cutoff.
+
 ## 1.5.1 (2026-08-17)
 
 ### Changed

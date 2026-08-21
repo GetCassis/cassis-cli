@@ -110,8 +110,24 @@ def _timeout_of(call, body):
             ),
             _IMPORT_BODY,
         ),
+        (
+            lambda transport: api_module.get_ontology_export(
+                api_url="https://cassis.test", api_key="sk-k6-test", project_id="p1", transport=transport
+            ),
+            {"files": _FILES},
+        ),
+        (
+            lambda transport: api_module.post_eval_run_start(
+                api_url="https://cassis.test",
+                api_key="sk-k6-test",
+                project_id="p1",
+                files=_FILES,
+                transport=transport,
+            ),
+            {"run_id": "r1", "status": "running", "total_cases": 1},
+        ),
     ],
-    ids=["check", "fmt", "import"],
+    ids=["check", "fmt", "import", "pull", "eval-run-start"],
 )
 def test_whole_tree_calls_get_the_long_timeout(call, body):
     # Validating/serializing a few hundred ontology files is tens of seconds of

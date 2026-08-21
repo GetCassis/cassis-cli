@@ -87,6 +87,11 @@ def _render(status_record: "dict[str, Any]", comparison_text: str) -> None:
         typer.echo(f"Git sync: {git_sync['provider']} {git_sync['repo']} (path {git_sync['base_path']})")
     else:
         typer.echo("Git sync: not configured")
+    pending = status_record.get("pending_source_changes")
+    if pending and pending.get("total"):
+        breaking = pending.get("breaking") or 0
+        breaking_text = f", {breaking} breaking" if breaking else ""
+        typer.echo(f"Source changes pending review: {pending['total']}{breaking_text} (cassis source-changes list)")
     typer.echo(f"Local checkout: {comparison_text}")
 
 

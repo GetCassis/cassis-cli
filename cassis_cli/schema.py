@@ -175,17 +175,26 @@ def push(
         envvar="CASSIS_BASE_PATH",
         help="Repository directory the ontology is exported under (the project's git-sync Path setting).",
     ),
+    complete_source: bool = typer.Option(
+        False,
+        "--complete",
+        help="The file is the project's complete source schema: schemas absent from it are treated as dropped. "
+        "Without it, the upload only speaks for the schemas it contains.",
+    ),
     poll_interval: float = typer.Option(5.0, "--poll-interval", help="Seconds between polls."),
     timeout: float = typer.Option(600.0, "--timeout", help="Give up waiting after this many seconds."),
     json_output: bool = typer.Option(False, "--json", help="Print the run record as raw JSON."),
 ) -> None:
     """Upload a DDL file to detect source-schema changes (same as the webapp's "Update from DDL").
 
-    The DDL must contain at least one CREATE TABLE statement and represents the
-    project's complete source schema. Cassis diffs it against the ontology:
-    added, dropped, and changed objects appear in Ontology > Review > Data
-    source for approval. Re-uploading a corrected DDL supersedes the previous
-    one. Only works on DDL-only projects (no warehouse connection).
+    The DDL must contain at least one CREATE TABLE statement. Cassis diffs it
+    against the ontology: added, dropped, and changed objects appear in
+    Ontology > Review > Data source for approval. The file speaks only for the
+    schemas it contains — a partial export (one schema of many) never removes
+    the others; pass --complete when the file is the project's complete source
+    schema so schemas absent from it are treated as dropped. Re-uploading a
+    corrected DDL supersedes the previous one. Only works on DDL-only projects
+    (no warehouse connection).
 
     Always waits for the detection run to finish: the server parses the DDL
     inside the run (a large file takes a while, and an unparseable one fails
@@ -211,7 +220,9 @@ def push(
         raise typer.Exit(EXIT_USAGE)
 
     try:
-        run = post_detect_from_ddl(api_url=api_url, api_key=api_key, project_id=project_id, ddl=ddl_text)
+        run = post_detect_from_ddl(
+            api_url=api_url, api_key=api_key, project_id=project_id, ddl=ddl_text, complete_source=complete_source
+        )
     except SourceChangeConflictError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(EXIT_VALIDATION_FAILED) from exc
@@ -237,9 +248,19 @@ def push(
     run_status = run.get("status")
     if run_status == "completed":
         summary = run.get("summary") or {}
-        total = summary.get("total_changes", 0)
+        total = summary.get("reviewable_total")
+        if total is None:
+            total = sum(summary.get(key, 0) for key in ("changes_created", "changes_updated", "changes_reopened"))
+        if summary.get("partial_upload_suspected"):
+            typer.secho(
+                "Note: the file drops most of the tracked tables in the schemas it covers, which"
+                " often means a partial export. Removals of modeled tables wait for review;"
+                " re-push a complete export to undo unintended drops.",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
         typer.secho(
-            f"✓ Detection completed: {total} change(s) detected." if total else "✓ Detection completed: no changes.",
+            f"✓ Detection completed: {total} change(s) to review." if total else "✓ Detection completed: no changes.",
             fg=typer.colors.GREEN,
         )
         raise typer.Exit(EXIT_OK)

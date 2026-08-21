@@ -72,6 +72,26 @@ class TestStatusCommand:
         assert "Git sync: github acme/warehouse (path cassis)" in result.output
         assert "in sync with the published version" in result.output
 
+    def test_reports_pending_source_changes(self, repo, monkeypatch):
+        body = dict(_STATUS_BODY, pending_source_changes={"total": 12, "breaking": 3})
+        _mock_api(monkeypatch, lambda request: httpx.Response(200, json=body))
+        _fake_git(monkeypatch, {("rev-parse", "HEAD"): _PUBLISHED_SHA})
+
+        result = runner.invoke(app, ["status", str(repo), "--api-key", "sk-k6-test"])
+
+        assert result.exit_code == 0
+        assert "Source changes pending review: 12, 3 breaking (cassis source-changes list)" in result.output
+
+    def test_omits_pending_line_when_server_has_none(self, repo, monkeypatch):
+        # Also the old-server shape: no `pending_source_changes` key at all.
+        _mock_api(monkeypatch, _status_handler)
+        _fake_git(monkeypatch, {("rev-parse", "HEAD"): _PUBLISHED_SHA})
+
+        result = runner.invoke(app, ["status", str(repo), "--api-key", "sk-k6-test"])
+
+        assert result.exit_code == 0
+        assert "Source changes pending review" not in result.output
+
     def test_checkout_ahead_of_published_version(self, repo, monkeypatch):
         _mock_api(monkeypatch, _status_handler)
         _fake_git(

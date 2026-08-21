@@ -218,6 +218,12 @@ def post_ontology_import(
     if response.status_code >= 400:
         raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
     result = _parse_json_response(response, url)
+    # The import runs as a background job on the server; once the response
+    # stream has started the status code is fixed at 200, so an in-job failure
+    # arrives as a body carrying only an ``error`` key (deliberately not the
+    # success shape, so older CLIs fail loudly instead of reporting success).
+    if isinstance(result, dict) and "error" in result and "domain_count" not in result:
+        raise UploadValidationError(str(result["error"]))
     if not isinstance(result, dict) or not all(
         key in result for key in ("domain_count", "table_count", "join_count", "metric_count", "published_version")
     ):
@@ -235,7 +241,10 @@ def get_ontology_export(
     """GET /api/ci/projects/{project_id}/ontology/export and return the files tree."""
     url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/ontology/export"
     try:
-        with _client(transport=transport) as client:
+        # Whole-tree download: serializing thousands of tables takes the
+        # server the better part of a minute, so the default budget is the
+        # thing that breaks first — use the tree ceiling.
+        with _client(timeout=ONTOLOGY_TREE_TIMEOUT_SECONDS, transport=transport) as client:
             response = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
@@ -354,13 +363,18 @@ def post_detect_from_ddl(
     api_key: str,
     project_id: str,
     ddl: str,
+    complete_source: bool = False,
     transport: Optional[httpx.BaseTransport] = None,
 ) -> dict[str, Any]:
     """POST /api/ci/projects/{project_id}/source-changes/detect-from-ddl and return the run record."""
     url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/source-changes/detect-from-ddl"
     try:
         with _client(transport=transport) as client:
-            response = client.post(url, json={"ddl": ddl}, headers={"Authorization": f"Bearer {api_key}"})
+            response = client.post(
+                url,
+                json={"ddl": ddl, "complete_source": complete_source},
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
 
@@ -429,7 +443,9 @@ def post_eval_run_start(
     if case_ids is not None:
         body["test_case_ids"] = case_ids
     try:
-        with _client(transport=transport) as client:
+        # May carry the whole ontology tree in `files` — same budget as the
+        # other whole-tree endpoints.
+        with _client(timeout=ONTOLOGY_TREE_TIMEOUT_SECONDS, transport=transport) as client:
             response = client.post(url, json=body, headers={"Authorization": f"Bearer {api_key}"})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
@@ -741,6 +757,80 @@ def post_issue_status(
         raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
     result = _parse_json_response(response, url)
     if not isinstance(result, dict) or "status" not in result:
+        raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
+    return result
+
+
+class SourceChangeNotFoundError(ApiError):
+    """The project has no source change with this id."""
+
+
+def get_source_changes(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    status: Optional[str] = None,
+    limit: Optional[int] = None,
+    offset: Optional[int] = None,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> dict[str, Any]:
+    """GET /api/ci/projects/{project_id}/source-changes and return the {items, total} page."""
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/source-changes"
+    params: dict[str, str] = {}
+    if status:
+        params["status"] = status
+    if limit is not None:
+        params["limit"] = str(limit)
+    if offset is not None:
+        params["offset"] = str(offset)
+    try:
+        with _client(transport=transport) as client:
+            response = client.get(url, params=params or None, headers={"Authorization": f"Bearer {api_key}"})
+    except httpx.HTTPError as exc:
+        raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
+
+    if response.status_code == 401:
+        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+    if response.status_code in (403, 404):
+        raise _project_scope_error(response)
+    if response.status_code >= 400:
+        raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
+    result = _parse_json_response(response, url)
+    if not isinstance(result, dict) or not isinstance(result.get("items"), list) or "total" not in result:
+        raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
+    return result
+
+
+def get_source_change(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    change_id: str,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> dict[str, Any]:
+    """GET /api/ci/projects/{project_id}/source-changes/{change_id} and return the full change."""
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/source-changes/{change_id}"
+    try:
+        with _client(transport=transport) as client:
+            response = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+    except httpx.HTTPError as exc:
+        raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
+
+    if response.status_code == 401:
+        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+    # Exact-match wire contract with the source-change endpoints' 404 detail
+    # (see backend/app/endpoints/ci.py): it distinguishes a missing change
+    # (exit 1) from a project-scope 404 (exit 3).
+    if response.status_code == 404 and _detail_or_text(response) == "Source change not found":
+        raise SourceChangeNotFoundError(f"No source change {change_id} in project {project_id}.")
+    if response.status_code in (403, 404):
+        raise _project_scope_error(response)
+    if response.status_code >= 400:
+        raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
+    result = _parse_json_response(response, url)
+    if not isinstance(result, dict) or "id" not in result:
         raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
     return result
 
