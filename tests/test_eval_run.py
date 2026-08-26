@@ -370,6 +370,20 @@ class TestEvalRunCommand:
         assert result.exit_code == 3
         assert "already active" in result.output
 
+    def test_json_output_keeps_stdout_to_the_record(self, repo, monkeypatch):
+        """`--json --wait | jq` must work: the progress lines belong to stderr."""
+        _mock_api(monkeypatch, _sequential_handler({}))
+
+        result = runner.invoke(
+            app, ["eval", "run", str(repo), "--project", PROJECT_ID, "--api-key", "sk-k6-test", "--json"]
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)  # the whole of stdout is one JSON document
+        assert payload["run"]["status"] == "completed"
+        assert "cases done" in result.stderr
+        assert "started" in result.stderr
+
     def test_json_output(self, repo, monkeypatch):
         _mock_api(monkeypatch, _sequential_handler({}))
 

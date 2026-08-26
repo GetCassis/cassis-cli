@@ -76,6 +76,20 @@ class TestSchemaPushCommand:
         assert "Detection run started" in result.output
         assert "2 change(s) to review" in result.output
 
+    def test_json_keeps_stdout_to_the_record(self, repo, ddl_file, monkeypatch):
+        """`--json | jq` must work: the started/completed lines belong to stderr."""
+        _mock_api(monkeypatch, _start_handler, _completed_handler())
+
+        result = runner.invoke(
+            app, ["schema", "push", str(ddl_file), "--path", str(repo), "--api-key", "sk-k6-test", "--json"]
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)  # the whole of stdout is one JSON document
+        assert payload["status"] == "completed"
+        assert "Detection run started" in result.stderr
+        assert "2 change(s) to review" in result.stderr
+
     def test_push_scope_flag_rides_the_request(self, repo, ddl_file, monkeypatch):
         # Default: the upload speaks only for the schemas it contains
         # (complete_source=false); --complete asserts the whole source.

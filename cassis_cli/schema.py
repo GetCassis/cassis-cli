@@ -231,7 +231,8 @@ def push(
         raise typer.Exit(EXIT_TRANSPORT) from exc
 
     run_id = run["run_id"]
-    typer.echo(f"Detection run started: {run_id}")
+    # To stderr under --json so `cassis schema push --json | jq` gets only the record.
+    typer.echo(f"Detection run started: {run_id}", err=json_output)
 
     run = _wait_for_detection_run(
         api_url=api_url,
@@ -262,6 +263,7 @@ def push(
         typer.secho(
             f"✓ Detection completed: {total} change(s) to review." if total else "✓ Detection completed: no changes.",
             fg=typer.colors.GREEN,
+            err=json_output,
         )
         raise typer.Exit(EXIT_OK)
     if run_status == "failed":

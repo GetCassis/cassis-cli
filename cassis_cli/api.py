@@ -635,7 +635,11 @@ def post_eval_run_cancel(
 
 
 class IssueNotFoundError(ApiError):
-    """The project has no issue (or occurrence) with this id."""
+    """The project has no issue, occurrence or issue-analysis run with this id.
+
+    Raised off the server's exact 404 detail, so it separates "this id doesn't
+    exist" from "this project isn't in scope for your key", which 404s too.
+    """
 
 
 def _get_issue_json(
@@ -645,8 +649,14 @@ def _get_issue_json(
     *,
     params: Optional[dict[str, str]] = None,
     not_found_message: Optional[str] = None,
+    not_found_detail: str = "Issue not found",
 ) -> Any:
-    """GET an issues URL with the shared error mapping."""
+    """GET an issues URL with the shared error mapping.
+
+    `not_found_detail` is the server's exact 404 detail for "this id does not
+    exist in the project" — `"Issue not found"` for issues and occurrences,
+    `"Issue-analysis run not found"` for analysis runs.
+    """
     try:
         with _client(transport=transport) as client:
             response = client.get(url, params=params, headers={"Authorization": f"Bearer {api_key}"})
@@ -657,8 +667,8 @@ def _get_issue_json(
         raise AuthError("The Cassis API rejected the API key (invalid or expired).")
     # Exact-match wire contract with the issue endpoints' 404 detail (see the
     # issue routes in backend/app/endpoints/ci.py): it distinguishes a missing
-    # issue or occurrence (exit 1) from a project-scope 404 (exit 3).
-    if response.status_code == 404 and not_found_message and _detail_or_text(response) == "Issue not found":
+    # issue, occurrence or run (exit 1) from a project-scope 404 (exit 3).
+    if response.status_code == 404 and not_found_message and _detail_or_text(response) == not_found_detail:
         raise IssueNotFoundError(not_found_message)
     if response.status_code in (403, 404):
         raise _project_scope_error(response)
@@ -925,3 +935,102 @@ def post_ontology_test(
     if not isinstance(result, dict) or "status" not in result:
         raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
     return result
+
+
+class IssueAnalysisActiveError(ApiError):
+    """An issue-analysis run is already in flight for the project (HTTP 409)."""
+
+
+class NothingToAnalyzeError(ApiError):
+    """Every conversation on the project has already been analyzed (HTTP 422)."""
+
+
+_ANALYSIS_RUN_KEYS = ("id", "status", "total_chats", "chats_analyzed", "occurrences_created", "issues_touched")
+
+
+def _check_analysis_run_shape(result: Any, url: str) -> dict[str, Any]:
+    if not isinstance(result, dict) or not all(key in result for key in _ANALYSIS_RUN_KEYS):
+        raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
+    return result
+
+
+def post_issue_analysis_start(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> dict[str, Any]:
+    """POST /api/ci/projects/{project_id}/issue-analysis/runs and return the run record."""
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/issue-analysis/runs"
+    try:
+        with _client(transport=transport) as client:
+            response = client.post(url, headers={"Authorization": f"Bearer {api_key}"})
+    except httpx.HTTPError as exc:
+        raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
+
+    if response.status_code == 401:
+        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+    if response.status_code == 409:
+        raise IssueAnalysisActiveError(
+            "An issue analysis is already running for this project — wait for it to finish, "
+            "or cancel it from the webapp's Issues page."
+        )
+    if response.status_code == 422 and "analyz" in response.text.lower():
+        # The route takes no body, so its 422 is the server's "nothing to
+        # analyze" answer; any other 422 falls through to the generic error.
+        raise NothingToAnalyzeError("Nothing to analyze: every conversation on this project has already been analyzed.")
+    if response.status_code in (403, 404):
+        raise _project_scope_error(response)
+    if response.status_code >= 400:
+        raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
+    return _check_analysis_run_shape(_parse_json_response(response, url), url)
+
+
+def get_issue_analysis_run(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    run_id: str,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> dict[str, Any]:
+    """GET /api/ci/projects/{project_id}/issue-analysis/runs/{run_id} and return the run record."""
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/issue-analysis/runs/{run_id}"
+    return _check_analysis_run_shape(
+        _get_issue_json(
+            url,
+            api_key,
+            transport,
+            not_found_message=f"No issue-analysis run {run_id} in this project.",
+            not_found_detail="Issue-analysis run not found",
+        ),
+        url,
+    )
+
+
+def post_issue_analysis_cancel(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    run_id: str,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> None:
+    """POST /api/ci/projects/{project_id}/issue-analysis/runs/{run_id}/cancel."""
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/issue-analysis/runs/{run_id}/cancel"
+    try:
+        with _client(transport=transport) as client:
+            response = client.post(url, headers={"Authorization": f"Bearer {api_key}"})
+    except httpx.HTTPError as exc:
+        raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
+    if response.status_code == 401:
+        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+    # Same exact-match contract as `get_issue_analysis_run`: a missing run is
+    # not a project-scope problem.
+    if response.status_code == 404 and _detail_or_text(response) == "Issue-analysis run not found":
+        raise IssueNotFoundError(f"No issue-analysis run {run_id} in this project.")
+    if response.status_code in (403, 404):
+        raise _project_scope_error(response)
+    if response.status_code >= 400:
+        raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")

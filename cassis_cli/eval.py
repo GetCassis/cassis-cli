@@ -30,6 +30,7 @@ from cassis_cli.api import (
 )
 from cassis_cli.common import (
     DEFAULT_BASE_PATH,
+    EXIT_INTERRUPTED,
     EXIT_OK,
     EXIT_TRANSPORT,
     EXIT_USAGE,
@@ -41,7 +42,6 @@ from cassis_cli.common import (
 
 app = typer.Typer(no_args_is_help=True, help="Eval commands.")
 
-EXIT_INTERRUPTED = 130
 
 # Result statuses that count as "passed"; everything else is a failure or error.
 _PASSED = "passed"
@@ -134,6 +134,9 @@ def _print_results_table(results: list[dict[str, Any]]) -> None:
 
 def _print_summary(run: dict[str, Any]) -> None:
     summary = run.get("summary") or {}
+    if summary.get("error"):
+        # A failed run carries its reason here (e.g. the worker was lost).
+        typer.secho(f"Run error: {str(summary['error'])[:300]}", fg=typer.colors.RED)
     total = summary.get("total", run.get("total_cases"))
     passed = summary.get("passed", 0)
     accuracy = summary.get("accuracy")
@@ -498,7 +501,8 @@ def run(
             typer.echo(f"Follow it at: {run_url}")
         raise typer.Exit(EXIT_OK)
 
-    typer.echo(f"Eval run {run_id} started: {total} cases against {ontology_label!r}.")
+    # To stderr under --json so `cassis eval run --json | jq` gets only the record.
+    typer.echo(f"Eval run {run_id} started: {total} cases against {ontology_label!r}.", err=json_output)
 
     try:
         final_run, results = _wait_for_run(
@@ -509,13 +513,15 @@ def run(
             total=total,
             poll_interval=poll_interval,
             timeout=timeout,
+            json_output=json_output,
         )
     except KeyboardInterrupt:
-        typer.echo("")
-        typer.echo("Interrupted — cancelling the run...")
+        # To stderr under --json, for the same reason as `issues analyze`.
+        typer.echo("", err=json_output)
+        typer.echo("Interrupted — cancelling the run...", err=json_output)
         try:
             post_eval_run_cancel(api_url=api_url, api_key=api_key, project_id=project_id, run_id=run_id)
-            typer.echo("Run cancelled.")
+            typer.echo("Run cancelled.", err=json_output)
         except ApiError as exc:
             typer.secho(f"Could not cancel the run: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(EXIT_INTERRUPTED)
@@ -550,8 +556,11 @@ def _wait_for_run(
     total: int,
     poll_interval: float,
     timeout: float,
+    json_output: bool = False,
 ) -> "tuple[dict[str, Any], list[dict[str, Any]]]":
     """Poll the run until terminal. Returns (run, results).
+
+    Progress lines go to stderr under --json so stdout stays the JSON record.
 
     Exits 3 directly on timeout, on an auth failure (fail fast — retrying a
     revoked key can't succeed), or after several consecutive poll failures.
@@ -587,7 +596,7 @@ def _wait_for_run(
         passed = sum(1 for r in results if r.get("status") == _PASSED)
         line = f"{done}/{total} cases done — {passed} ✓ {done - passed} ✗"
         if line != last_line:
-            typer.echo(line)
+            typer.echo(line, err=json_output)
             last_line = line
 
         if run_record.get("status") in _TERMINAL_RUN_STATUSES:

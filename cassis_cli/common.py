@@ -20,6 +20,9 @@ EXIT_OK = 0
 EXIT_VALIDATION_FAILED = 1
 EXIT_USAGE = 2
 EXIT_TRANSPORT = 3
+# Conventional "terminated by SIGINT" code: the user pressed Ctrl-C while a
+# command was waiting on a server-side run (which the command cancels first).
+EXIT_INTERRUPTED = 130
 
 # Request ceilings of the /api/ci file-tree endpoints, mirrored so oversized
 # trees fail fast with a clear message before any upload. Sized for ~10,000

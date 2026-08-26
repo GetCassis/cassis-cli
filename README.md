@@ -110,6 +110,11 @@ cassis schema push schema.sql
 # List the projects the API key can reach (id, name, published version, dialect):
 cassis projects list
 
+# Refresh the issues from the conversations nobody has analyzed yet (the same pass as the
+# webapp's "Analyze conversations" button; waits for the result, --no-wait returns at once,
+# and Ctrl-C cancels the run server-side and exits 130):
+cassis issues analyze
+
 # Triage the issues Cassis raised (filter by --status/--impact/--cause; --json for raw output):
 cassis issues list --status open
 cassis issues show 019f0000-0000-7000-8000-0000000000e1
@@ -168,9 +173,9 @@ cassis ontology fmt --check
 | Code | Meaning                                                                        |
 | ---- | ------------------------------------------------------------------------------ |
 | 0    | Ontology is valid (check) / pulled (pull) / uploaded (upload) / eval run completed all-passed (eval run) / every probe completed (test — whatever its outcome; probes are informational, don't gate CI on them) |
-| 1    | Validation failed (check: findings printed; upload: nothing imported; eval run: invalid tree, failed cases, or failed/cancelled run; test: invalid tree or a probe failed; add-case: duplicate question or gold SQL that does not run; delete-case: no such case in the project; issues: no such issue or occurrence in the project; schema push: failed or cancelled detection run, or the project won't accept the push (a run is already in flight, or it is warehouse-connected rather than DDL-only); source-changes show: no such change in the project) |
+| 1    | Validation failed (check: findings printed; upload: nothing imported; eval run: invalid tree, failed cases, or failed/cancelled run; test: invalid tree or a probe failed; add-case: duplicate question or gold SQL that does not run; delete-case: no such case in the project; issues: no such issue or occurrence in the project; issues analyze: failed or cancelled analysis run; schema push: failed or cancelled detection run, or the project won't accept the push (a run is already in flight, or it is warehouse-connected rather than DDL-only); source-changes show: no such change in the project) |
 | 2    | Usage error (missing API key or project, no ontology directory, unreadable file, tree over the size limits) |
-| 3    | Transport/API error (unreachable API, invalid key, inaccessible project, unexpected response), another eval run already active, out of credits, or `--timeout` reached |
+| 3    | Transport/API error (unreachable API, invalid key, inaccessible project, unexpected response), another eval run or issue analysis already active, out of credits, or `--timeout` reached |
 
 Commands that send the local tree (`check`, `fmt`, `upload`, `eval run`, `test`) accept up to
 20,000 ontology files / 100 MB total (path + content bytes) — sized for ontologies of

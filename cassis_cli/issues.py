@@ -3,12 +3,14 @@
 Issues are what the product found wrong while answering questions (an ontology
 gap, missing data). Listing, reading the evidence behind an occurrence, and
 resolving or dismissing them from a checkout keeps the fix loop next to the
-ontology files instead of in the webapp.
+ontology files instead of in the webapp; `analyze` refreshes them from the
+conversations that arrived since the last pass, without waiting for the nightly one.
 """
 
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -18,14 +20,20 @@ from cassis_cli.api import (
     ApiError,
     AuthError,
     IssueNotFoundError,
+    NothingToAnalyzeError,
     get_issue,
+    get_issue_analysis_run,
     get_issue_evidence,
     get_issues,
+    post_issue_analysis_cancel,
+    post_issue_analysis_start,
     post_issue_status,
 )
 from cassis_cli.common import (
     DEFAULT_BASE_PATH,
+    EXIT_INTERRUPTED,
     EXIT_OK,
+    EXIT_TRANSPORT,
     EXIT_USAGE,
     EXIT_VALIDATION_FAILED,
     api_failure,
@@ -288,7 +296,7 @@ def resolve(
     api_url: str = _API_URL_OPTION,
     base_path: str = _BASE_PATH_OPTION,
 ) -> None:
-    """Mark an issue resolved — the ontology change that fixes it has landed.
+    """Mark an issue resolved — the ontology change that fixes it is published.
 
     Exits 0 on success, 1 when the issue does not exist in the project, 2 on
     usage errors, 3 on transport/API errors.
@@ -352,3 +360,178 @@ def reopen(
         api_url=api_url,
         base_path=base_path,
     )
+
+
+_TERMINAL_ANALYSIS_STATUSES = frozenset({"completed", "failed", "cancelled"})
+
+# Consecutive poll failures tolerated before giving up — same tolerance as
+# `eval run`: a transient blip must not abandon a multi-minute run, a
+# permanently broken poll must not spin until --timeout.
+_MAX_CONSECUTIVE_POLL_FAILURES = 5
+
+
+@app.command()
+def analyze(
+    path: Path = _PATH_OPTION,
+    project_id: Optional[str] = _PROJECT_OPTION,
+    api_key: Optional[str] = _API_KEY_OPTION,
+    api_url: str = _API_URL_OPTION,
+    base_path: str = _BASE_PATH_OPTION,
+    wait: bool = typer.Option(
+        True,
+        "--wait/--no-wait",
+        help="Wait for the analysis to finish and print its summary (default), or just print the run id.",
+    ),
+    poll_interval: float = typer.Option(5.0, "--poll-interval", help="Seconds between status polls."),
+    timeout: float = typer.Option(1800.0, "--timeout", help="Give up waiting after this many seconds."),
+    json_output: bool = typer.Option(False, "--json", help="Print the final run record as raw JSON."),
+) -> None:
+    """Analyze the conversations nobody has analyzed yet, turning what went wrong into issues.
+
+    The same pass as the webapp's "Analyze conversations" button — it runs on
+    Cassis's workers, so a Ctrl-C or a lost connection never kills it — started
+    on demand instead of waiting for the nightly one. When every conversation is
+    already analyzed the command is a no-op and exits 0, so a job re-running it
+    on a quiet project stays green. Exits 0 when the run completes, 1 when it
+    fails or is cancelled, 2 on usage errors, 3 on transport errors, when a run
+    is already in flight, or on --timeout (the run keeps going server-side).
+    Ctrl-C cancels the run and exits 130.
+    """
+    api_key = require_api_key(api_key)
+    project_id = resolve_project_id(project_id, path / Path(base_path), quiet=json_output)
+
+    try:
+        run = post_issue_analysis_start(api_url=api_url, api_key=api_key, project_id=project_id)
+    except NothingToAnalyzeError as exc:
+        if json_output:
+            typer.echo(json.dumps({"run": None, "message": str(exc)}, indent=2))
+        else:
+            typer.echo(str(exc))
+        raise typer.Exit(EXIT_OK) from exc
+    except (AuthError, ApiError) as exc:  # covers IssueAnalysisActiveError too
+        raise api_failure(exc) from exc
+
+    run_id = str(run["id"])
+    total = int(run.get("total_chats") or 0)
+
+    if not wait:
+        if json_output:
+            typer.echo(json.dumps({"run": run}, indent=2))
+        else:
+            typer.echo(f"Analysis run {run_id} started: {total} conversation(s) to analyze.")
+            typer.echo("It keeps going server-side; the results land on the webapp's Issues page.")
+        raise typer.Exit(EXIT_OK)
+
+    if not json_output:
+        typer.echo(f"Analysis run {run_id} started: {total} conversation(s) to analyze.")
+
+    try:
+        final_run = _wait_for_analysis(
+            api_url=api_url,
+            api_key=api_key,
+            project_id=project_id,
+            run_id=run_id,
+            poll_interval=poll_interval,
+            timeout=timeout,
+            quiet=json_output,
+        )
+    except KeyboardInterrupt:
+        # To stderr under --json: stdout is the machine's, and these lines would
+        # land in front of the JSON document a caller is parsing.
+        typer.echo("", err=json_output)
+        typer.echo("Interrupted — cancelling the analysis...", err=json_output)
+        try:
+            post_issue_analysis_cancel(api_url=api_url, api_key=api_key, project_id=project_id, run_id=run_id)
+            typer.echo("Analysis cancelled. Conversations analyzed so far keep their occurrences.", err=json_output)
+        except ApiError as exc:
+            typer.secho(f"Could not cancel the analysis: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_INTERRUPTED)
+
+    if json_output:
+        typer.echo(json.dumps({"run": final_run}, indent=2))
+    else:
+        _print_analysis_outcome(final_run)
+
+    if final_run.get("status") == "completed":
+        raise typer.Exit(EXIT_OK)
+    raise typer.Exit(EXIT_VALIDATION_FAILED)
+
+
+def _wait_for_analysis(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    run_id: str,
+    poll_interval: float,
+    timeout: float,
+    quiet: bool,
+) -> dict[str, Any]:
+    """Poll the run until terminal and return its final record.
+
+    Exits 3 directly on timeout, on an auth failure (fail fast — retrying a
+    revoked key can't succeed), or after several consecutive poll failures.
+    The server-side run keeps going in all three cases.
+    """
+    deadline = time.monotonic() + timeout
+    last_line = ""
+    failures = 0
+    while time.monotonic() < deadline:
+        try:
+            run = get_issue_analysis_run(api_url=api_url, api_key=api_key, project_id=project_id, run_id=run_id)
+        except AuthError as exc:
+            typer.secho(f"{exc} The analysis keeps going server-side.", fg=typer.colors.RED, err=True)
+            raise typer.Exit(EXIT_TRANSPORT) from exc
+        except IssueNotFoundError as exc:
+            # The run is gone (purged): nothing to keep polling for.
+            raise _not_found_failure(exc) from exc
+        except ApiError as exc:
+            failures += 1
+            if failures >= _MAX_CONSECUTIVE_POLL_FAILURES:
+                typer.secho(
+                    f"Polling failed {failures} times in a row ({exc}). "
+                    "Giving up — the analysis keeps going server-side; see the webapp's Issues page.",
+                    fg=typer.colors.RED,
+                    err=True,
+                )
+                raise typer.Exit(EXIT_TRANSPORT) from exc
+            typer.secho(f"(poll failed, retrying: {exc})", fg=typer.colors.YELLOW, err=True)
+            time.sleep(poll_interval)
+            continue
+        failures = 0
+
+        line = (
+            f"{run.get('chats_analyzed', 0)}/{run.get('total_chats', 0)} conversations analyzed — "
+            f"{run.get('occurrences_created', 0)} occurrence(s) found"
+        )
+        if not quiet and line != last_line:
+            typer.echo(line)
+            last_line = line
+
+        if run.get("status") in _TERMINAL_ANALYSIS_STATUSES:
+            return run
+        time.sleep(poll_interval)
+
+    typer.secho(
+        f"Timed out after {timeout:.0f}s waiting for analysis run {run_id}. "
+        "The analysis keeps going server-side — see the webapp's Issues page.",
+        fg=typer.colors.YELLOW,
+        err=True,
+    )
+    raise typer.Exit(EXIT_TRANSPORT)
+
+
+def _print_analysis_outcome(run: dict[str, Any]) -> None:
+    status = run.get("status")
+    if status == "completed":
+        typer.echo("")
+        typer.echo(
+            f"Analysis complete: {run.get('chats_analyzed', 0)} conversation(s) analyzed, "
+            f"{run.get('occurrences_created', 0)} occurrence(s) found, "
+            f"{run.get('issues_touched', 0)} issue(s) created or updated."
+        )
+        typer.echo("Review them with `cassis issues list`.")
+    elif status == "cancelled":
+        typer.secho("Analysis cancelled before it finished.", fg=typer.colors.YELLOW, err=True)
+    else:
+        typer.secho(f"Analysis failed: {run.get('error') or 'unknown error'}", fg=typer.colors.RED, err=True)

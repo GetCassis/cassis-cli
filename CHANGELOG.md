@@ -3,6 +3,28 @@
 Versions match the releases on [PyPI](https://pypi.org/project/cassis-cli/); dates are the
 PyPI upload date.
 
+## 1.7.0 (2026-08-26)
+
+### Added
+
+- `cassis issues analyze`: analyze the project's conversations that nobody has analyzed yet,
+  turning what went wrong into issues — the same pass as the webapp's "Analyze conversations"
+  button, started on demand from a checkout or a CI job instead of waiting for the nightly one.
+  Waits for the run and prints its summary by default (`--no-wait` prints the run id and
+  returns; `--poll-interval`, `--timeout`, `--json`). When every conversation is already
+  analyzed it is a no-op that exits 0, so a job re-running it on a quiet project stays green.
+  Exit codes follow `eval run`: 1 when the run fails or is cancelled, 3 on transport errors, an
+  already-running analysis, or `--timeout` (the run keeps going server-side); Ctrl-C cancels
+  the run. Needs the matching server-side support, which ships with the Cassis release this
+  version accompanies.
+
+### Fixed
+
+- `cassis eval run --json` (with `--wait`) and `cassis schema push --json` mixed human-readable
+  lines into stdout around the JSON record — the "run started" line, `eval run`'s `n/m cases
+  done` progress, `schema push`'s "Detection completed" summary — breaking `| jq`. Those lines
+  now go to stderr; stdout is the JSON record alone.
+
 ## 1.6.0 (2026-08-21)
 
 ### Added
