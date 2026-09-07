@@ -5,11 +5,13 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional, TypeVar
 from uuid import UUID
 
 import typer
+from cassis_cli.api import ApiError, AuthError
 
 # Repository directory the ontology tree is exported under. Must match the
 # project's git-sync "Path" setting in Cassis (default "cassis").
@@ -31,6 +33,15 @@ EXIT_INTERRUPTED = 130
 # backend/app/schemas/ci.py (the server's 422 remains the backstop).
 MAX_FILES = 20_000
 MAX_TOTAL_BYTES = 100 * 1024 * 1024
+# Mirrors the server's DDL upload ceiling (backend/app/endpoints/uploads.py).
+MAX_DDL_BYTES = 10 * 1024 * 1024
+
+# Consecutive poll failures tolerated before a wait gives up: covers transient
+# blips (LB hiccup, brief network loss) without letting a permanently broken
+# poll (deleted run/project) spin until --timeout.
+MAX_CONSECUTIVE_POLL_FAILURES = 5
+
+T = TypeVar("T")
 
 
 def api_failure(exc: Exception) -> "typer.Exit":
@@ -93,6 +104,151 @@ def git_file_states(directory: Path) -> Optional[tuple[set[str], set[str]]]:
     tracked = {p for p in tracked_proc.stdout.split("\0") if p}
     dirty = {p for p in dirty_proc.stdout.split("\0") if p}
     return tracked, dirty
+
+
+def sync_ontology_tree(
+    ontology_dir: Path,
+    files: "dict[str, str]",
+    *,
+    prune: bool = True,
+    skip_unchanged: bool = False,
+    before_delete: "Optional[Callable[[list[str]], None]]" = None,
+) -> "tuple[list[str], list[str], list[dict[str, str]]]":
+    """Write a server-rendered ontology tree under ``ontology_dir``; prune what git can restore.
+
+    The write/prune contract shared by ``ontology pull`` and ``schema apply``.
+    Returns ``(written, deleted, kept)``: ``written`` lists every file written
+    (with ``skip_unchanged``, only those whose content actually changed),
+    ``deleted`` the stale ontology files removed, ``kept`` the stale files left
+    in place as ``{"path", "reason"}`` entries. ``before_delete`` is called with
+    the paths about to be deleted, when there are any, so a command can announce
+    them first.
+
+    The server controls the paths: anything escaping ``ontology_dir`` exits 3
+    rather than being trusted. A file that cannot be written or deleted exits 2
+    (a local checkout problem: permissions, dir/file collision). Pruning only
+    ever deletes a stale file that is tracked and unmodified in git: an
+    untracked or locally modified file is user work Cassis has never seen, and
+    outside a git work tree nothing is deleted at all (#27).
+    """
+    ontology_dir = ontology_dir.resolve()
+    written: list[str] = []
+    for rel, content in sorted(files.items()):
+        dest = (ontology_dir / rel).resolve()
+        if not dest.is_relative_to(ontology_dir):
+            typer.secho(f"Refusing to write outside {ontology_dir}: {rel!r}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(EXIT_TRANSPORT)
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if skip_unchanged and dest.exists() and dest.read_text(encoding="utf-8") == content:
+                continue
+            dest.write_text(content, encoding="utf-8")
+        except OSError as exc:
+            typer.secho(f"Cannot write {dest}: {exc}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(EXIT_USAGE) from exc
+        written.append(rel)
+
+    deleted: list[str] = []
+    kept: list[dict[str, str]] = []
+    if prune and ontology_dir.is_dir():
+        stale = sorted(set(collect_files(ontology_dir)) - set(files))
+        if stale:
+            states = git_file_states(ontology_dir)
+            to_delete: list[str] = []
+            if states is None:
+                kept = [{"path": rel, "reason": "not in a git repository"} for rel in stale]
+            else:
+                tracked, dirty = states
+                for rel in stale:
+                    if rel not in tracked:
+                        kept.append({"path": rel, "reason": "untracked in git"})
+                    elif rel in dirty:
+                        kept.append({"path": rel, "reason": "locally modified"})
+                    else:
+                        to_delete.append(rel)
+            if to_delete and before_delete is not None:
+                before_delete(to_delete)
+            for rel in to_delete:
+                try:
+                    (ontology_dir / rel).unlink()
+                except OSError as exc:
+                    typer.secho(f"Cannot delete {ontology_dir / rel}: {exc}", fg=typer.colors.RED, err=True)
+                    raise typer.Exit(EXIT_USAGE) from exc
+                deleted.append(rel)
+    return written, deleted, kept
+
+
+def _echo_error(exc: Exception) -> None:
+    typer.secho(str(exc), fg=typer.colors.RED, err=True)
+
+
+def echo_poll_retry(exc: ApiError) -> None:
+    """The standard "(poll failed, retrying: ...)" notice, for ``poll_until(on_retry=...)``."""
+    typer.secho(f"(poll failed, retrying: {exc})", fg=typer.colors.YELLOW, err=True)
+
+
+def poll_until(
+    fetch: "Callable[[], T]",
+    is_terminal: "Callable[[T], bool]",
+    *,
+    poll_interval: float,
+    timeout: float,
+    on_timeout: "Callable[[T], None]",
+    max_consecutive_failures: int = MAX_CONSECUTIVE_POLL_FAILURES,
+    on_progress: "Optional[Callable[[T], None]]" = None,
+    on_auth_error: "Optional[Callable[[AuthError], None]]" = None,
+    on_retry: "Optional[Callable[[ApiError], None]]" = None,
+    on_give_up: "Optional[Callable[[ApiError, int], None]]" = None,
+) -> T:
+    """Call ``fetch`` every ``poll_interval`` seconds until ``is_terminal`` accepts what it returned.
+
+    The one wait loop behind every ``--wait``: the record is fetched at least
+    once (so ``--timeout 0`` means "poll once"), ``on_progress`` sees every
+    record fetched, and the terminal record is returned. Exits 3 (transport),
+    after the matching callback has printed its message, when:
+
+    - the deadline passes while the record is still not terminal
+      (``on_timeout`` gets the last record);
+    - ``fetch`` raises ``AuthError`` (fail fast: retrying a revoked key can't
+      succeed; ``on_auth_error``, default: the error text);
+    - ``fetch`` raises ``ApiError`` ``max_consecutive_failures`` times in a row
+      (``on_give_up``, default: the error text). Each tolerated failure is
+      reported through ``on_retry`` (default: silent) and the wait continues,
+      so a transient blip never abandons a multi-minute run.
+
+    Anything else ``fetch`` raises, ``typer.Exit`` and ``KeyboardInterrupt``
+    included, propagates untouched: the caller decides whether to cancel the
+    server-side run on Ctrl-C.
+    """
+    deadline = time.monotonic() + timeout
+    failures = 0
+    while True:
+        try:
+            record = fetch()
+        except AuthError as exc:
+            (on_auth_error or _echo_error)(exc)
+            raise typer.Exit(EXIT_TRANSPORT) from exc
+        except ApiError as exc:
+            failures += 1
+            if failures >= max_consecutive_failures:
+                if on_give_up is not None:
+                    on_give_up(exc, failures)
+                else:
+                    _echo_error(exc)
+                raise typer.Exit(EXIT_TRANSPORT) from exc
+            if on_retry is not None:
+                on_retry(exc)
+            time.sleep(poll_interval)
+            continue
+        failures = 0
+        if on_progress is not None:
+            on_progress(record)
+        if is_terminal(record):
+            return record
+        if time.monotonic() >= deadline:
+            on_timeout(record)
+            raise typer.Exit(EXIT_TRANSPORT)
+        time.sleep(poll_interval)
 
 
 def is_legacy_domain_file(rel_path: str) -> bool:

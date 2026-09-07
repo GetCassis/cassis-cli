@@ -72,19 +72,10 @@ class TestStatusCommand:
         assert "Git sync: github acme/warehouse (path cassis)" in result.output
         assert "in sync with the published version" in result.output
 
-    def test_reports_pending_source_changes(self, repo, monkeypatch):
+    def test_ignores_legacy_pending_source_changes_key(self, repo, monkeypatch):
+        # Older servers still send `pending_source_changes`; the CLI neither prints nor trips on it.
         body = dict(_STATUS_BODY, pending_source_changes={"total": 12, "breaking": 3})
         _mock_api(monkeypatch, lambda request: httpx.Response(200, json=body))
-        _fake_git(monkeypatch, {("rev-parse", "HEAD"): _PUBLISHED_SHA})
-
-        result = runner.invoke(app, ["status", str(repo), "--api-key", "sk-k6-test"])
-
-        assert result.exit_code == 0
-        assert "Source changes pending review: 12, 3 breaking (cassis source-changes list)" in result.output
-
-    def test_omits_pending_line_when_server_has_none(self, repo, monkeypatch):
-        # Also the old-server shape: no `pending_source_changes` key at all.
-        _mock_api(monkeypatch, _status_handler)
         _fake_git(monkeypatch, {("rev-parse", "HEAD"): _PUBLISHED_SHA})
 
         result = runner.invoke(app, ["status", str(repo), "--api-key", "sk-k6-test"])
@@ -165,7 +156,7 @@ class TestStatusCommand:
 
         _mock_api(monkeypatch, handler)
         _fake_git(monkeypatch, {("rev-parse", "HEAD"): _PUBLISHED_SHA})
-        monkeypatch.setattr("cassis_cli.status.time.sleep", lambda seconds: None)
+        monkeypatch.setattr("cassis_cli.common.time.sleep", lambda seconds: None)
 
         result = runner.invoke(app, ["status", str(repo), "--api-key", "sk-k6-test", "--watch"])
 
@@ -195,3 +186,51 @@ class TestStatusCommand:
         result = runner.invoke(app, ["status", str(repo)])
         assert result.exit_code == 2
         assert "No API key" in result.output
+
+
+class TestStatusSchemaPlanSummary:
+    """The `Schema plan:` line only appears while a plan is in flight or ready to apply."""
+
+    def _status(self, repo, monkeypatch, body):
+        _mock_api(monkeypatch, lambda request: httpx.Response(200, json=body))
+        _fake_git(monkeypatch, {("rev-parse", "HEAD"): _PUBLISHED_SHA})
+        return runner.invoke(app, ["status", str(repo), "--api-key", "sk-k6-test"])
+
+    def test_no_schema_plan_block_prints_no_line(self, repo, monkeypatch):
+        # Older servers have no `schema_plan` key at all.
+        result = self._status(repo, monkeypatch, _STATUS_BODY)
+        assert result.exit_code == 0, result.output
+        assert "Schema plan" not in result.output
+
+    def test_null_schema_plan_prints_no_line(self, repo, monkeypatch):
+        result = self._status(repo, monkeypatch, dict(_STATUS_BODY, schema_plan=None))
+        assert result.exit_code == 0, result.output
+        assert "Schema plan" not in result.output
+
+    def test_ready_plan_prints_the_apply_hint(self, repo, monkeypatch):
+        plan = {"id": "019f0000-0000-7000-8000-00000000d001", "status": "ready", "ontology_changes": 3}
+        result = self._status(repo, monkeypatch, dict(_STATUS_BODY, schema_plan=plan))
+        assert result.exit_code == 0, result.output
+        assert (
+            "Schema plan: ready, 3 ontology change(s) (cassis schema apply --plan 019f0000-0000-7000-8000-00000000d001)"
+            in result.output
+        )
+
+    def test_ready_plan_without_a_change_count(self, repo, monkeypatch):
+        plan = {"id": "019f0000-0000-7000-8000-00000000d001", "status": "ready"}
+        result = self._status(repo, monkeypatch, dict(_STATUS_BODY, schema_plan=plan))
+        assert result.exit_code == 0, result.output
+        assert "Schema plan: ready (cassis schema apply --plan" in result.output
+
+    def test_in_flight_plan_prints_its_status(self, repo, monkeypatch):
+        plan = {"id": "019f0000-0000-7000-8000-00000000d001", "status": "planning"}
+        result = self._status(repo, monkeypatch, dict(_STATUS_BODY, schema_plan=plan))
+        assert result.exit_code == 0, result.output
+        assert "Schema plan: planning" in result.output
+
+    def test_terminal_plan_prints_no_line(self, repo, monkeypatch):
+        # Applied / failed / stale plans are history, not something to act on.
+        plan = {"id": "019f0000-0000-7000-8000-00000000d001", "status": "applied"}
+        result = self._status(repo, monkeypatch, dict(_STATUS_BODY, schema_plan=plan))
+        assert result.exit_code == 0, result.output
+        assert "Schema plan" not in result.output

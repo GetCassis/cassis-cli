@@ -45,7 +45,7 @@ def _mock_api(monkeypatch, handler):
             return _fn(**kwargs)
 
         monkeypatch.setattr(f"cassis_cli.eval.{name}", patched)
-    monkeypatch.setattr("cassis_cli.eval.time.sleep", lambda _s: None)
+    monkeypatch.setattr("cassis_cli.common.time.sleep", lambda _s: None)
 
 
 def _run_body(status="running", total=2, label="my-branch", summary=None):
@@ -261,7 +261,7 @@ class TestEvalRunCommand:
             return httpx.Response(200, json=_run_body(status="running"))
 
         _mock_api(monkeypatch, handler)
-        monkeypatch.setattr("cassis_cli.eval.time.monotonic", _fake_monotonic())
+        monkeypatch.setattr("cassis_cli.common.time.monotonic", _fake_monotonic())
 
         result = runner.invoke(app, ["eval", "run", str(repo), "--project", PROJECT_ID, "--api-key", "sk-k6-test"])
 

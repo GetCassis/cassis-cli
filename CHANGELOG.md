@@ -3,6 +3,42 @@
 Versions match the releases on [PyPI](https://pypi.org/project/cassis-cli/); dates are the
 PyPI upload date.
 
+## 2.0.0 (2026-09-07)
+
+### Removed
+
+- `cassis source-changes` (`list` / `show` / `detect`). The Data source review queue it read is
+  gone from the server: schema drift is now previewed and applied with `cassis schema plan` /
+  `apply` / `push` (including `--warehouse` for a project connected to a warehouse).
+- `cassis status` no longer prints the "Source changes pending review" line.
+
+### Added
+
+- `--warehouse` on `cassis schema plan` / `apply` / `push`: for a project connected to a
+  warehouse, the server introspects it instead of parsing a DDL file. Same plan, same review,
+  same push. Starting a plan replaces the project's previous one.
+- `cassis schema plan <ddl>`: preview what a DDL update would change before anything is
+  applied. Prints the source schema diff, the ontology changes Cassis will make (every change on
+  a table placed in the ontology, with everything a drop takes with it: joins, metrics, virtual
+  tables) and warnings, terraform-style. Exit 0 when the plan is ready, 1 when the DDL is
+  unparseable or looks truncated, 3 on transport errors. `--json` prints the plan record on
+  stdout (the rendering goes to stderr), `--out` writes it to a file.
+- `cassis schema apply <ddl>` / `cassis schema apply --plan <id>`: plan, then write the
+  resulting ontology files into the local checkout (renamed tables, dropped columns, rewritten
+  joins and metrics) for review with `git diff`. The app is not modified.
+- `cassis schema push <ddl> [--publish]`: push the new schema and the local ontology to the app
+  in that order (schema version stored, tracked schema updated, then the local tree replaces the
+  unpublished ontology so hand edits land too). `--yes` skips the prompt (required without a
+  TTY). A plan whose schema or ontology moved since it was computed is refused as stale: plan again.
+- `cassis status` shows the schema plan waiting to be applied.
+
+### Changed
+
+- `cassis schema push` no longer queues review items in Ontology → Review → Data source: it
+  applies the schema and uploads the local ontology (see above). Needs the matching server-side
+  support, which ships with the Cassis release this version accompanies (older servers answer
+  "upgrade the server first").
+
 ## 1.7.0 (2026-08-26)
 
 ### Added

@@ -10,7 +10,6 @@ conversations that arrived since the last pass, without waiting for the nightly 
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -37,7 +36,9 @@ from cassis_cli.common import (
     EXIT_USAGE,
     EXIT_VALIDATION_FAILED,
     api_failure,
+    echo_poll_retry,
     one_line,
+    poll_until,
     require_api_key,
     resolve_project_id,
 )
@@ -364,11 +365,6 @@ def reopen(
 
 _TERMINAL_ANALYSIS_STATUSES = frozenset({"completed", "failed", "cancelled"})
 
-# Consecutive poll failures tolerated before giving up — same tolerance as
-# `eval run`: a transient blip must not abandon a multi-minute run, a
-# permanently broken poll must not spin until --timeout.
-_MAX_CONSECUTIVE_POLL_FAILURES = 5
-
 
 @app.command()
 def analyze(
@@ -473,52 +469,54 @@ def _wait_for_analysis(
     revoked key can't succeed), or after several consecutive poll failures.
     The server-side run keeps going in all three cases.
     """
-    deadline = time.monotonic() + timeout
-    last_line = ""
-    failures = 0
-    while time.monotonic() < deadline:
+    last_line = {"text": ""}
+
+    def fetch() -> "dict[str, Any]":
         try:
-            run = get_issue_analysis_run(api_url=api_url, api_key=api_key, project_id=project_id, run_id=run_id)
-        except AuthError as exc:
-            typer.secho(f"{exc} The analysis keeps going server-side.", fg=typer.colors.RED, err=True)
-            raise typer.Exit(EXIT_TRANSPORT) from exc
+            return get_issue_analysis_run(api_url=api_url, api_key=api_key, project_id=project_id, run_id=run_id)
         except IssueNotFoundError as exc:
             # The run is gone (purged): nothing to keep polling for.
             raise _not_found_failure(exc) from exc
-        except ApiError as exc:
-            failures += 1
-            if failures >= _MAX_CONSECUTIVE_POLL_FAILURES:
-                typer.secho(
-                    f"Polling failed {failures} times in a row ({exc}). "
-                    "Giving up — the analysis keeps going server-side; see the webapp's Issues page.",
-                    fg=typer.colors.RED,
-                    err=True,
-                )
-                raise typer.Exit(EXIT_TRANSPORT) from exc
-            typer.secho(f"(poll failed, retrying: {exc})", fg=typer.colors.YELLOW, err=True)
-            time.sleep(poll_interval)
-            continue
-        failures = 0
 
+    def on_progress(run: "dict[str, Any]") -> None:
         line = (
             f"{run.get('chats_analyzed', 0)}/{run.get('total_chats', 0)} conversations analyzed — "
             f"{run.get('occurrences_created', 0)} occurrence(s) found"
         )
-        if not quiet and line != last_line:
+        if not quiet and line != last_line["text"]:
             typer.echo(line)
-            last_line = line
+            last_line["text"] = line
 
-        if run.get("status") in _TERMINAL_ANALYSIS_STATUSES:
-            return run
-        time.sleep(poll_interval)
+    def on_auth_error(exc: AuthError) -> None:
+        typer.secho(f"{exc} The analysis keeps going server-side.", fg=typer.colors.RED, err=True)
 
-    typer.secho(
-        f"Timed out after {timeout:.0f}s waiting for analysis run {run_id}. "
-        "The analysis keeps going server-side — see the webapp's Issues page.",
-        fg=typer.colors.YELLOW,
-        err=True,
+    def on_give_up(exc: ApiError, failures: int) -> None:
+        typer.secho(
+            f"Polling failed {failures} times in a row ({exc}). "
+            "Giving up — the analysis keeps going server-side; see the webapp's Issues page.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+
+    def on_timeout(_run: "dict[str, Any]") -> None:
+        typer.secho(
+            f"Timed out after {timeout:.0f}s waiting for analysis run {run_id}. "
+            "The analysis keeps going server-side — see the webapp's Issues page.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+
+    return poll_until(
+        fetch,
+        lambda run: run.get("status") in _TERMINAL_ANALYSIS_STATUSES,
+        poll_interval=poll_interval,
+        timeout=timeout,
+        on_timeout=on_timeout,
+        on_progress=on_progress,
+        on_auth_error=on_auth_error,
+        on_retry=echo_poll_retry,
+        on_give_up=on_give_up,
     )
-    raise typer.Exit(EXIT_TRANSPORT)
 
 
 def _print_analysis_outcome(run: dict[str, Any]) -> None:

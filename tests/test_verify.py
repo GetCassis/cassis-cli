@@ -89,7 +89,7 @@ def _mock_all(monkeypatch, *, fmt=None, check=None, eval_handler=None):
         patch("cassis_cli.eval.post_eval_run_start", post_eval_run_start, eval_handler)
         patch("cassis_cli.eval.get_eval_run", get_eval_run, eval_handler)
         patch("cassis_cli.eval.get_eval_run_results", get_eval_run_results, eval_handler)
-        monkeypatch.setattr("cassis_cli.eval.time.sleep", lambda seconds: None)
+        monkeypatch.setattr("cassis_cli.common.time.sleep", lambda seconds: None)
 
 
 class TestVerifyCommand:

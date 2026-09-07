@@ -26,12 +26,11 @@ from cassis_cli.common import (
     EXIT_USAGE,
     EXIT_VALIDATION_FAILED,
 )
-from cassis_cli.common import collect_files as _collect_files
 from cassis_cli.common import collect_tree as _collect_tree
-from cassis_cli.common import git_file_states as _git_file_states
 from cassis_cli.common import is_legacy_domain_file as _is_legacy_domain_file
 from cassis_cli.common import require_api_key as _require_api_key
 from cassis_cli.common import resolve_project_id as _resolve_project_id
+from cassis_cli.common import sync_ontology_tree as _sync_ontology_tree
 from cassis_cli.guide import DOCTRINE_VERSION, GUIDE_FILENAME, guide_status, refresh_guide
 
 app = typer.Typer(no_args_is_help=True, help="Ontology commands.")
@@ -233,55 +232,15 @@ def pull(
         raise typer.Exit(EXIT_TRANSPORT) from exc
 
     ontology_dir = (path / Path(base_path)).resolve()
-    written: list[str] = []
-    for rel, content in sorted(files.items()):
-        dest = (ontology_dir / rel).resolve()
-        # The server controls these paths; refuse anything escaping the
-        # ontology dir rather than trusting it blindly.
-        if not dest.is_relative_to(ontology_dir):
-            typer.secho(f"Refusing to write outside {ontology_dir}: {rel!r}", fg=typer.colors.RED, err=True)
-            raise typer.Exit(EXIT_TRANSPORT)
-        try:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(content, encoding="utf-8")
-        except OSError as exc:  # local checkout problem (permissions, dir/file collision) — usage, not validation
-            typer.secho(f"Cannot write {dest}: {exc}", fg=typer.colors.RED, err=True)
-            raise typer.Exit(EXIT_USAGE) from exc
-        written.append(rel)
 
-    deleted: list[str] = []
-    kept: list[dict[str, str]] = []
-    if prune and ontology_dir.is_dir():
-        local = _collect_files(ontology_dir)
-        stale = sorted(set(local) - set(files))
-        if stale:
-            # Only delete what git can restore. An untracked or locally
-            # modified file is user work Cassis has never seen — pruning it
-            # would be unrecoverable data loss (#27).
-            states = _git_file_states(ontology_dir)
-            to_delete: list[str] = []
-            if states is None:
-                kept = [{"path": rel, "reason": "not in a git repository"} for rel in stale]
-            else:
-                tracked, dirty = states
-                for rel in stale:
-                    if rel not in tracked:
-                        kept.append({"path": rel, "reason": "untracked in git"})
-                    elif rel in dirty:
-                        kept.append({"path": rel, "reason": "locally modified"})
-                    else:
-                        to_delete.append(rel)
-            if to_delete and not json_output:
-                typer.echo(f"Deleting {len(to_delete)} stale ontology file(s):")
-                for rel in to_delete:
-                    typer.echo(f"  {base_path}/{rel}")
-            for rel in to_delete:
-                try:
-                    (ontology_dir / rel).unlink()
-                except OSError as exc:
-                    typer.secho(f"Cannot delete {ontology_dir / rel}: {exc}", fg=typer.colors.RED, err=True)
-                    raise typer.Exit(EXIT_USAGE) from exc
-                deleted.append(rel)
+    def announce_deletions(to_delete: "list[str]") -> None:
+        typer.echo(f"Deleting {len(to_delete)} stale ontology file(s):")
+        for rel in to_delete:
+            typer.echo(f"  {base_path}/{rel}")
+
+    written, deleted, kept = _sync_ontology_tree(
+        ontology_dir, files, prune=prune, before_delete=None if json_output else announce_deletions
+    )
 
     # Managed modeling guide: refresh AGENTS.md so a repo-aware agent loads
     # current Cassis doctrine. Not part of the ontology tree (YAML-only), so it

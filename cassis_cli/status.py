@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-import time
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
@@ -22,6 +21,7 @@ from cassis_cli.common import (
     EXIT_OK,
     EXIT_TRANSPORT,
     EXIT_USAGE,
+    poll_until,
     require_api_key,
     resolve_project_id,
 )
@@ -87,11 +87,13 @@ def _render(status_record: "dict[str, Any]", comparison_text: str) -> None:
         typer.echo(f"Git sync: {git_sync['provider']} {git_sync['repo']} (path {git_sync['base_path']})")
     else:
         typer.echo("Git sync: not configured")
-    pending = status_record.get("pending_source_changes")
-    if pending and pending.get("total"):
-        breaking = pending.get("breaking") or 0
-        breaking_text = f", {breaking} breaking" if breaking else ""
-        typer.echo(f"Source changes pending review: {pending['total']}{breaking_text} (cassis source-changes list)")
+    schema_plan = status_record.get("schema_plan")
+    if isinstance(schema_plan, dict) and schema_plan.get("status") == "ready":
+        changes = schema_plan.get("ontology_changes")
+        changes_text = f", {changes} ontology change(s)" if changes is not None else ""
+        typer.echo(f"Schema plan: ready{changes_text} (cassis schema apply --plan {schema_plan.get('id')})")
+    elif isinstance(schema_plan, dict) and schema_plan.get("status") in ("planning", "applying"):
+        typer.echo(f"Schema plan: {schema_plan['status']}")
     typer.echo(f"Local checkout: {comparison_text}")
 
 
@@ -150,40 +152,55 @@ def status(
         typer.secho("--watch needs a git checkout (no local HEAD to compare against).", fg=typer.colors.RED, err=True)
         raise typer.Exit(EXIT_USAGE)
 
-    deadline = time.monotonic() + timeout
-    last_line: Optional[str] = None
-    while True:
-        try:
-            record = get_project_status(api_url=api_url, api_key=api_key, project_id=project_id)
-        except (AuthError, ApiError) as exc:
-            typer.secho(str(exc), fg=typer.colors.RED, err=True)
-            raise typer.Exit(EXIT_TRANSPORT) from exc
+    last_line: "dict[str, Optional[str]]" = {"text": None}
 
+    def fetch() -> "Tuple[dict[str, Any], str, bool]":
+        """The status record plus the local comparison it implies: (record, comparison_text, in_sync)."""
+        record = get_project_status(api_url=api_url, api_key=api_key, project_id=project_id)
         published = record.get("published_version") or {}
-        published_sha = published.get("git_commit_sha")
-        comparison_text, in_sync = _local_comparison(path, head, published_sha)
+        comparison_text, in_sync = _local_comparison(path, head, published.get("git_commit_sha"))
+        return record, comparison_text, in_sync
 
+    def report(snapshot: "Tuple[dict[str, Any], str, bool]") -> None:
+        record, comparison_text, in_sync = snapshot
         if json_output:
             typer.echo(json.dumps({**record, "local": {"head": head, "in_sync": in_sync}}, indent=2))
         elif not watch:
             _render(record, comparison_text)
         else:
+            published = record.get("published_version") or {}
+            published_sha = published.get("git_commit_sha")
             version_text = f"v{published['version']}" if published else "nothing published"
             line = f"{version_text} (commit {published_sha[:9] if published_sha else 'none'}); local: {comparison_text}"
-            if line != last_line:
+            if line != last_line["text"]:
                 typer.echo(line)
-                last_line = line
+                last_line["text"] = line
 
-        if not watch:
-            raise typer.Exit(EXIT_OK)
-        if in_sync:
-            typer.secho("✓ Published version matches the local HEAD.", fg=typer.colors.GREEN)
-            raise typer.Exit(EXIT_OK)
-        if time.monotonic() >= deadline:
-            typer.secho(
-                f"Timed out after {timeout:.0f}s: the published version still does not match the local HEAD.",
-                fg=typer.colors.YELLOW,
-                err=True,
-            )
-            raise typer.Exit(EXIT_TRANSPORT)
-        time.sleep(poll_interval)
+    def on_timeout(_snapshot: "Tuple[dict[str, Any], str, bool]") -> None:
+        typer.secho(
+            f"Timed out after {timeout:.0f}s: the published version still does not match the local HEAD.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+
+    if not watch:
+        try:
+            report(fetch())
+        except (AuthError, ApiError) as exc:
+            typer.secho(str(exc), fg=typer.colors.RED, err=True)
+            raise typer.Exit(EXIT_TRANSPORT) from exc
+        raise typer.Exit(EXIT_OK)
+
+    # Any poll failure ends the watch (max_consecutive_failures=1): unlike a
+    # server-side run, nothing is lost by exiting, and the user re-runs it.
+    poll_until(
+        fetch,
+        lambda snapshot: snapshot[2],
+        poll_interval=poll_interval,
+        timeout=timeout,
+        on_timeout=on_timeout,
+        max_consecutive_failures=1,
+        on_progress=report,
+    )
+    typer.secho("✓ Published version matches the local HEAD.", fg=typer.colors.GREEN)
+    raise typer.Exit(EXIT_OK)

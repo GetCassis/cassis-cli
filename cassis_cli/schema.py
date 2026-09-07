@@ -1,4 +1,4 @@
-"""`cassis schema` — local snapshot of the data source's source schema.
+"""`cassis schema`: the data source's schema. Pull a snapshot, plan and apply a DDL update.
 
 The source schema is OBSERVED state (the warehouse is authoritative), so the
 snapshot is a gitignored cache, never a committed file: `pull` writes
@@ -10,7 +10,7 @@ the MCP `get_source_schema` tool; `pulled_at` records how stale it is.
 from __future__ import annotations
 
 import json
-import time
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -20,28 +20,46 @@ from cassis_cli.api import (
     DEFAULT_API_URL,
     ApiError,
     AuthError,
-    SourceChangeConflictError,
+    SchemaPlanConflictError,
+    UploadValidationError,
+    get_ontology_export,
     get_schema_export,
-    get_source_change_run,
-    post_detect_from_ddl,
+    get_schema_plan,
+    get_schema_plan_checkout,
+    post_ontology_import,
+    post_schema_plan,
+    post_schema_plan_apply,
+    post_schema_plan_warehouse,
 )
 from cassis_cli.common import (
     DEFAULT_BASE_PATH,
+    EXIT_INTERRUPTED,
     EXIT_OK,
     EXIT_TRANSPORT,
     EXIT_USAGE,
     EXIT_VALIDATION_FAILED,
+    MAX_DDL_BYTES,
+    collect_files,
+    collect_tree,
+    poll_until,
     require_api_key,
     resolve_project_id,
+    sync_ontology_tree,
 )
+from cassis_cli.schema_plan import plan_counts, plan_is_empty, render_plan
 
-app = typer.Typer(help="Pull or push the data source's schema.")
+app = typer.Typer(help="Pull the data source's schema; plan, apply (locally) and push a schema update from DDL.")
 
-_TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
-_MAX_CONSECUTIVE_POLL_FAILURES = 5
+_PLAN_TERMINAL = {"ready", "failed", "cancelled", "stale", "expired", "applied"}
+_APPLY_TERMINAL = {"applied", "failed", "stale", "expired", "cancelled"}
 
 SNAPSHOT_FILENAME = ".schema.json"
+# Written by `schema apply`, read by `schema push`: which app ontology the local
+# tree was rendered from, so a push can refuse to overwrite edits made in the
+# app in between. Local cache, never committed.
+APPLY_MARKER_FILENAME = ".schema-apply.json"
 _GITIGNORE_HEADER = "# Cassis local caches (observed state — never commit)"
+_GITIGNORED = (SNAPSHOT_FILENAME, APPLY_MARKER_FILENAME)
 
 
 @app.command()
@@ -136,182 +154,639 @@ def ensure_gitignored(ontology_dir: Path) -> None:
         existing = gitignore.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         existing = ""
-    if SNAPSHOT_FILENAME in existing.splitlines():
+    lines = existing.splitlines()
+    missing = [name for name in _GITIGNORED if name not in lines]
+    if not missing:
         return
     prefix = "" if not existing else existing.rstrip("\n") + "\n"
-    gitignore.write_text(f"{prefix}{_GITIGNORE_HEADER}\n{SNAPSHOT_FILENAME}\n", encoding="utf-8")
+    header = "" if _GITIGNORE_HEADER in lines else f"{_GITIGNORE_HEADER}\n"
+    gitignore.write_text(prefix + header + "".join(f"{name}\n" for name in missing), encoding="utf-8")
+
+
+_PATH_OPTION = typer.Option(
+    Path("."), "--path", help="Repository checkout root (the directory containing the ontology export path)."
+)
+_PROJECT_OPTION = typer.Option(
+    None,
+    "--project",
+    envvar="CASSIS_PROJECT_ID",
+    help="Target Cassis project ID (UUID). Defaults to the id in <base-path>/project.yml.",
+)
+_API_KEY_OPTION = typer.Option(
+    None,
+    "--api-key",
+    envvar="CASSIS_API_KEY",
+    help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+)
+_API_URL_OPTION = typer.Option(DEFAULT_API_URL, "--api-url", envvar="CASSIS_API_URL", help="Cassis API base URL.")
+_BASE_PATH_OPTION = typer.Option(
+    DEFAULT_BASE_PATH,
+    "--base-path",
+    envvar="CASSIS_BASE_PATH",
+    help="Repository directory the ontology is exported under (the project's git-sync Path setting).",
+)
+_COMPLETE_OPTION = typer.Option(
+    False,
+    "--complete",
+    help="The file is the project's complete source schema: schemas absent from it are treated as dropped. "
+    "Without it, the upload only speaks for the schemas it contains.",
+)
+_POLL_OPTION = typer.Option(5.0, "--poll-interval", help="Seconds between polls.")
+_TIMEOUT_OPTION = typer.Option(1800.0, "--timeout", help="Give up waiting after this many seconds.")
+_JSON_OPTION = typer.Option(False, "--json", help="Print the plan record as raw JSON (the plan itself goes to stderr).")
+_OUT_OPTION = typer.Option(None, "--out", help="Also write the plan record (JSON) to this file.")
+_WAREHOUSE_OPTION = typer.Option(
+    False,
+    "--warehouse",
+    help="Plan from the project's connected warehouse (introspected server-side) instead of a DDL file.",
+)
+
+
+def _require_one_source(
+    ddl_file: "Optional[Path]", warehouse: bool, *, or_plan: "Optional[str]" = None, accepts_plan: bool = False
+) -> None:
+    """Exactly one of a DDL file, --warehouse (and, for apply, --plan <id>)."""
+    given = sum(1 for x in (ddl_file is not None, warehouse, or_plan is not None) if x)
+    if given != 1:
+        options = "a DDL file, --warehouse or --plan <id>" if accepts_plan else "a DDL file or --warehouse"
+        typer.secho(f"Pass exactly one of {options}.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_USAGE)
 
 
 @app.command()
-def push(
-    ddl_file: Path = typer.Argument(
-        ..., help="Path to the DDL file (.sql, .ddl, .txt) containing CREATE TABLE statements."
+def plan(
+    ddl_file: Optional[Path] = typer.Argument(
+        None, help="Path to the DDL file (.sql, .ddl, .txt) containing CREATE TABLE statements. Or --warehouse."
     ),
-    path: Path = typer.Option(
-        Path("."),
-        help="Repository checkout root (the directory containing the ontology export path).",
-    ),
-    project_id: Optional[str] = typer.Option(
-        None,
-        "--project",
-        envvar="CASSIS_PROJECT_ID",
-        help="Target Cassis project ID (UUID). Defaults to the id in <base-path>/project.yml.",
-    ),
-    api_key: Optional[str] = typer.Option(
-        None,
-        "--api-key",
-        envvar="CASSIS_API_KEY",
-        help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
-    ),
-    api_url: str = typer.Option(
-        DEFAULT_API_URL,
-        "--api-url",
-        envvar="CASSIS_API_URL",
-        help="Cassis API base URL.",
-    ),
-    base_path: str = typer.Option(
-        DEFAULT_BASE_PATH,
-        "--base-path",
-        envvar="CASSIS_BASE_PATH",
-        help="Repository directory the ontology is exported under (the project's git-sync Path setting).",
-    ),
-    complete_source: bool = typer.Option(
-        False,
-        "--complete",
-        help="The file is the project's complete source schema: schemas absent from it are treated as dropped. "
-        "Without it, the upload only speaks for the schemas it contains.",
-    ),
-    poll_interval: float = typer.Option(5.0, "--poll-interval", help="Seconds between polls."),
-    timeout: float = typer.Option(600.0, "--timeout", help="Give up waiting after this many seconds."),
-    json_output: bool = typer.Option(False, "--json", help="Print the run record as raw JSON."),
+    warehouse: bool = _WAREHOUSE_OPTION,
+    path: Path = _PATH_OPTION,
+    project_id: Optional[str] = _PROJECT_OPTION,
+    api_key: Optional[str] = _API_KEY_OPTION,
+    api_url: str = _API_URL_OPTION,
+    base_path: str = _BASE_PATH_OPTION,
+    complete_source: bool = _COMPLETE_OPTION,
+    poll_interval: float = _POLL_OPTION,
+    timeout: float = _TIMEOUT_OPTION,
+    json_output: bool = _JSON_OPTION,
+    out: Optional[Path] = _OUT_OPTION,
 ) -> None:
-    """Upload a DDL file to detect source-schema changes (same as the webapp's "Update from DDL").
+    """Preview what a schema update would change. Nothing is applied.
 
-    The DDL must contain at least one CREATE TABLE statement. Cassis diffs it
-    against the ontology: added, dropped, and changed objects appear in
-    Ontology > Review > Data source for approval. The file speaks only for the
-    schemas it contains — a partial export (one schema of many) never removes
-    the others; pass --complete when the file is the project's complete source
-    schema so schemas absent from it are treated as dropped. Re-uploading a
-    corrected DDL supersedes the previous one. Only works on DDL-only projects
-    (no warehouse connection).
-
-    Always waits for the detection run to finish: the server parses the DDL
-    inside the run (a large file takes a while, and an unparseable one fails
-    the run rather than the upload request), so exit 0 means the schema parsed
-    AND was applied — there is no fire-and-forget mode. Exits 0 on success, 1
-    on a failed detection run, 2 on usage errors, 3 on transport/API errors or
-    a timeout.
+    Cassis diffs the new schema (a DDL file, or with --warehouse the connected
+    warehouse introspected server-side) against the stored schema and derives
+    the ontology edits it implies: every change on a table that is in the
+    ontology (placed in a domain), with everything a drop would take with it.
+    Tables outside the ontology only move the schema. A file speaks only for
+    the schemas it contains unless --complete; a warehouse plan is always
+    whole-source. Exits 0 when the plan is ready (even when it is empty), 1
+    when the plan failed (unparseable or truncated DDL, unreachable
+    warehouse), 2 on usage errors, 3 on transport errors or a timeout.
     """
     api_key = require_api_key(api_key)
-    project_id = resolve_project_id(project_id, path / base_path)
+    _require_one_source(ddl_file, warehouse)
+    resolved_project = resolve_project_id(project_id, path / base_path, quiet=json_output)
+    assert resolved_project is not None
+    record = _plan(
+        ddl_file,
+        warehouse=warehouse,
+        api_url=api_url,
+        api_key=api_key,
+        project_id=resolved_project,
+        complete_source=complete_source,
+        poll_interval=poll_interval,
+        timeout=timeout,
+        json_output=json_output,
+        out=out,
+    )
+    if json_output:
+        typer.echo(json.dumps(record, indent=2))
+    if record.get("status") != "ready":
+        raise typer.Exit(EXIT_VALIDATION_FAILED)
+    raise typer.Exit(EXIT_OK)
 
+
+@app.command()
+def apply(
+    ddl_file: Optional[Path] = typer.Argument(
+        None, help="DDL file to plan and apply locally. Or --warehouse, or --plan <id> for an existing plan."
+    ),
+    warehouse: bool = _WAREHOUSE_OPTION,
+    plan_id: Optional[str] = typer.Option(None, "--plan", help="Write this ready plan instead of planning a file."),
+    force: bool = typer.Option(
+        False, "--force", help="Write even if the local ontology differs from the app's (local edits are overwritten)."
+    ),
+    path: Path = _PATH_OPTION,
+    project_id: Optional[str] = _PROJECT_OPTION,
+    api_key: Optional[str] = _API_KEY_OPTION,
+    api_url: str = _API_URL_OPTION,
+    base_path: str = _BASE_PATH_OPTION,
+    complete_source: bool = _COMPLETE_OPTION,
+    poll_interval: float = _POLL_OPTION,
+    timeout: float = _TIMEOUT_OPTION,
+    json_output: bool = _JSON_OPTION,
+) -> None:
+    """Plan a DDL update and write the resulting ontology into the local checkout. The app is not modified.
+
+    GitOps: the plan is computed server-side (read-only), then the ontology
+    files it would produce are written under <path>/<base-path> (renamed
+    tables, dropped columns, rewritten joins and metrics) for you to review
+    with `git diff`, edit, commit. Stale ontology files (dropped tables and
+    joins) are deleted when git can restore them. Send the result with
+    `cassis schema push <ddl>`. Exits 0 when written, 1 when the plan failed /
+    is stale, 2 on usage errors, 3 on transport errors.
+    """
+    api_key = require_api_key(api_key)
+    _require_one_source(ddl_file, warehouse, or_plan=plan_id, accepts_plan=True)
+    base_path = base_path.strip().strip("/")
+    ontology_dir = (path / Path(base_path)).resolve()
+    resolved_project = resolve_project_id(project_id, ontology_dir, quiet=json_output)
+    assert resolved_project is not None
+    _require_checkout_in_sync(
+        ontology_dir, api_url=api_url, api_key=api_key, project_id=resolved_project, force=force, base_path=base_path
+    )
+
+    record = _plan_or_fetch(
+        ddl_file,
+        plan_id,
+        warehouse=warehouse,
+        api_url=api_url,
+        api_key=api_key,
+        project_id=resolved_project,
+        complete_source=complete_source,
+        poll_interval=poll_interval,
+        timeout=timeout,
+        json_output=json_output,
+    )
+    if record.get("status") != "ready":
+        raise typer.Exit(EXIT_VALIDATION_FAILED)
     try:
-        ddl_text = ddl_file.read_text(encoding="utf-8")
-    except OSError as exc:
-        typer.secho(f"Cannot read {ddl_file}: {exc}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(EXIT_USAGE) from exc
-    except UnicodeDecodeError as exc:
-        typer.secho(f"Cannot read {ddl_file}: {exc}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(EXIT_USAGE) from exc
-
-    if not ddl_text.strip():
-        typer.secho("DDL file is empty.", fg=typer.colors.RED, err=True)
-        raise typer.Exit(EXIT_USAGE)
-
-    try:
-        run = post_detect_from_ddl(
-            api_url=api_url, api_key=api_key, project_id=project_id, ddl=ddl_text, complete_source=complete_source
+        checkout = get_schema_plan_checkout(
+            api_url=api_url, api_key=api_key, project_id=resolved_project, plan_id=str(record["id"])
         )
-    except SourceChangeConflictError as exc:
+    except SchemaPlanConflictError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(EXIT_VALIDATION_FAILED) from exc
     except (AuthError, ApiError) as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(EXIT_TRANSPORT) from exc
+    written, deleted, kept = _write_checkout(ontology_dir, checkout["files"], json_output=json_output)
+    _write_apply_marker(ontology_dir, record)
+    for warning in checkout.get("warnings") or []:
+        typer.secho(f"  warning: {warning}", fg=typer.colors.YELLOW, err=True)
+    if json_output:
+        typer.echo(json.dumps({"plan": record, "written": written, "deleted": deleted, "kept": kept}, indent=2))
+        raise typer.Exit(EXIT_OK)
+    typer.secho(
+        f"✓ Wrote {len(written)} ontology file(s) into {ontology_dir}"
+        + (f", deleted {len(deleted)} stale file(s)" if deleted else "")
+        + ". The app is unchanged.",
+        fg=typer.colors.GREEN,
+    )
+    for entry in kept:
+        typer.secho(f"  kept {base_path}/{entry['path']} ({entry['reason']})", fg=typer.colors.YELLOW)
+    if warehouse:
+        push_hint = "--warehouse"
+    elif ddl_file is not None:
+        push_hint = str(ddl_file) + (" --complete" if complete_source else "")
+    else:
+        # A plan record does not say whether it came from a DDL or the warehouse:
+        # only the caller knows, so the hint names both rather than guessing.
+        push_hint = "<ddl>" + (" --complete" if record.get("complete_source") else "")
+        push_hint += " (or --warehouse if this plan was introspected from the warehouse)"
+    typer.echo(f"Review with git diff, then: cassis schema push {push_hint}")
+    raise typer.Exit(EXIT_OK)
 
-    run_id = run["run_id"]
-    # To stderr under --json so `cassis schema push --json | jq` gets only the record.
-    typer.echo(f"Detection run started: {run_id}", err=json_output)
 
-    run = _wait_for_detection_run(
+@app.command()
+def push(
+    ddl_file: Optional[Path] = typer.Argument(
+        None, help="The DDL file the local ontology was applied against. Or --warehouse."
+    ),
+    warehouse: bool = _WAREHOUSE_OPTION,
+    yes: bool = typer.Option(False, "--yes", "-y", help="Push without the confirmation prompt (CI)."),
+    publish: bool = typer.Option(False, "--publish", help="Publish the pushed ontology as a new version."),
+    label: Optional[str] = typer.Option(None, "--label", help="Label for the published version."),
+    path: Path = _PATH_OPTION,
+    project_id: Optional[str] = _PROJECT_OPTION,
+    api_key: Optional[str] = _API_KEY_OPTION,
+    api_url: str = _API_URL_OPTION,
+    base_path: str = _BASE_PATH_OPTION,
+    complete_source: bool = _COMPLETE_OPTION,
+    poll_interval: float = _POLL_OPTION,
+    timeout: float = _TIMEOUT_OPTION,
+    json_output: bool = _JSON_OPTION,
+) -> None:
+    """Push the new schema and the local ontology to the app.
+
+    Two steps, in order: the new schema (a DDL file, or the connected
+    warehouse with --warehouse) is planned and applied server-side (new
+    schema version, tracked schema updated, ontology edits the plan lists),
+    then the local ontology tree replaces the project's unpublished ontology
+    (so hand edits made after `cassis schema apply` land too). Pass --publish
+    to publish it as a new version. Exits 0 when pushed, 1 when the plan
+    failed / is stale or the upload was rejected, 2 on usage errors, 3 on
+    transport errors.
+    """
+    api_key = require_api_key(api_key)
+    _require_one_source(ddl_file, warehouse)
+    files, base_path = collect_tree(path, base_path)
+    resolved_project = resolve_project_id(project_id, path / Path(base_path), quiet=json_output)
+    assert resolved_project is not None
+
+    record = _plan_or_fetch(
+        ddl_file,
+        None,
+        warehouse=warehouse,
         api_url=api_url,
         api_key=api_key,
-        project_id=project_id,
-        run_id=run_id,
+        project_id=resolved_project,
+        complete_source=complete_source,
         poll_interval=poll_interval,
         timeout=timeout,
+        json_output=json_output,
     )
+    if record.get("status") != "ready":
+        raise typer.Exit(EXIT_VALIDATION_FAILED)
+    _require_marker_matches(path / Path(base_path), record)
+    if not yes:
+        if not (sys.stdin.isatty() and sys.stdout.isatty()) or json_output:
+            typer.secho("Refusing to push without confirmation: pass --yes.", fg=typer.colors.RED, err=True)
+            raise typer.Exit(EXIT_USAGE)
+        if not typer.confirm(f"Push the schema and {len(files)} ontology file(s) to the app?", default=False):
+            typer.secho("Nothing pushed.", fg=typer.colors.YELLOW, err=True)
+            raise typer.Exit(EXIT_OK)
 
-    if json_output:
-        typer.echo(json.dumps(run, indent=2))
-
-    run_status = run.get("status")
-    if run_status == "completed":
-        summary = run.get("summary") or {}
-        total = summary.get("reviewable_total")
-        if total is None:
-            total = sum(summary.get(key, 0) for key in ("changes_created", "changes_updated", "changes_reopened"))
-        if summary.get("partial_upload_suspected"):
+    if not plan_is_empty(record):
+        try:
+            record = post_schema_plan_apply(
+                api_url=api_url, api_key=api_key, project_id=resolved_project, plan_id=str(record["id"])
+            )
+        except SchemaPlanConflictError as exc:
+            typer.secho(str(exc), fg=typer.colors.RED, err=True)
+            raise typer.Exit(EXIT_VALIDATION_FAILED) from exc
+        except (AuthError, ApiError) as exc:
+            typer.secho(str(exc), fg=typer.colors.RED, err=True)
+            raise typer.Exit(EXIT_TRANSPORT) from exc
+        typer.echo(f"Applying schema plan {record['id']}…", err=True)
+        record = _wait_for_plan(
+            api_url=api_url,
+            api_key=api_key,
+            project_id=resolved_project,
+            plan_id=str(record["id"]),
+            terminal=_APPLY_TERMINAL,
+            what="apply",
+            poll_interval=poll_interval,
+            timeout=timeout,
+        )
+        if record.get("status") != "applied":
             typer.secho(
-                "Note: the file drops most of the tracked tables in the schemas it covers, which"
-                " often means a partial export. Removals of modeled tables wait for review;"
-                " re-push a complete export to undo unintended drops.",
-                fg=typer.colors.YELLOW,
+                f"Schema apply ended with status {record.get('status')}: {record.get('error') or ''}",
+                fg=typer.colors.RED,
                 err=True,
             )
-        typer.secho(
-            f"✓ Detection completed: {total} change(s) to review." if total else "✓ Detection completed: no changes.",
-            fg=typer.colors.GREEN,
-            err=json_output,
+            raise typer.Exit(EXIT_VALIDATION_FAILED)
+        result = record.get("apply_result") or {}
+        typer.secho(f"✓ Schema version {result.get('schema_version', '?')} stored.", fg=typer.colors.GREEN, err=True)
+    else:
+        typer.secho("Schema is up to date; pushing the ontology only.", err=True)
+
+    typer.echo(f"Uploading {len(files)} ontology file(s)…", err=True)
+    try:
+        upload = post_ontology_import(
+            api_url=api_url, api_key=api_key, project_id=resolved_project, files=files, publish=publish, label=label
         )
+    except UploadValidationError as exc:
+        typer.secho("Ontology upload rejected:", fg=typer.colors.RED, bold=True, err=True)
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_VALIDATION_FAILED) from exc
+    except (AuthError, ApiError) as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_TRANSPORT) from exc
+    if json_output:
+        typer.echo(json.dumps({"plan": record, "upload": upload}, indent=2))
         raise typer.Exit(EXIT_OK)
-    if run_status == "failed":
-        error = run.get("error") or "unknown error"
-        typer.secho(f"Detection failed: {error}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(EXIT_VALIDATION_FAILED)
-    if run_status == "cancelled":
-        typer.secho("Detection run was cancelled.", fg=typer.colors.YELLOW, err=True)
-        raise typer.Exit(EXIT_VALIDATION_FAILED)
-    typer.secho(f"Detection run ended with unexpected status: {run_status}", fg=typer.colors.RED, err=True)
-    raise typer.Exit(EXIT_TRANSPORT)
+    counts = (
+        f"{upload.get('table_count')} tables, {upload.get('domain_count')} domains, "
+        f"{upload.get('join_count')} joins, {upload.get('metric_count')} metrics"
+    )
+    version = upload.get("published_version")
+    if version is not None:
+        typer.secho(f"✓ Ontology pushed and published as v{version} ({counts}).", fg=typer.colors.GREEN)
+    else:
+        typer.secho(
+            f"✓ Ontology pushed ({counts}); it is now the project's unpublished ontology.", fg=typer.colors.GREEN
+        )
+    raise typer.Exit(EXIT_OK)
 
 
-def _wait_for_detection_run(
+def _require_checkout_in_sync(
+    ontology_dir: Path, *, api_url: str, api_key: str, project_id: str, force: bool, base_path: str
+) -> None:
+    """Refuse to overwrite a checkout that differs from the app's ontology (unless --force).
+
+    The rendered tree is "the app's ontology + the plan"; writing it over local
+    edits that never reached the app would lose them, and writing it over a
+    checkout behind the app is fine but the user should know. Missing or empty
+    local dir: nothing to protect.
+    """
+    if not ontology_dir.is_dir():
+        return
+    local = collect_files(ontology_dir)
+    if not local:
+        return
+    try:
+        remote = get_ontology_export(api_url=api_url, api_key=api_key, project_id=project_id)
+    except (AuthError, ApiError) as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_TRANSPORT) from exc
+    differing = sorted(rel for rel in set(local) | set(remote) if local.get(rel) != remote.get(rel))
+    if not differing:
+        return
+    if force:
+        typer.secho(
+            f"warning: {len(differing)} local ontology file(s) differ from the app and will be overwritten (--force).",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+        return
+    typer.secho(
+        f"The local ontology in {base_path}/ differs from the app's ({len(differing)} file(s)):",
+        fg=typer.colors.RED,
+        err=True,
+    )
+    for rel in differing[:10]:
+        typer.secho(f"  {base_path}/{rel}", fg=typer.colors.RED, err=True)
+    if len(differing) > 10:
+        typer.secho(f"  … {len(differing) - 10} more", fg=typer.colors.RED, err=True)
+    typer.secho(
+        "Bring the checkout up to date first (`cassis ontology pull`), or push your local edits "
+        "(`cassis ontology upload --no-publish`), then apply again. `--force` overwrites the local files.",
+        fg=typer.colors.RED,
+        err=True,
+    )
+    raise typer.Exit(EXIT_VALIDATION_FAILED)
+
+
+def _write_apply_marker(ontology_dir: Path, record: "dict[str, Any]") -> None:
+    """Remember which app ontology the local tree was rendered from (for `schema push`)."""
+    marker = {
+        "plan_id": record.get("id"),
+        "base_ontology_fingerprint": record.get("base_ontology_fingerprint"),
+        "applied_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    try:
+        ontology_dir.mkdir(parents=True, exist_ok=True)
+        (ontology_dir / APPLY_MARKER_FILENAME).write_text(json.dumps(marker, indent=2) + "\n", encoding="utf-8")
+        ensure_gitignored(ontology_dir)
+    except OSError as exc:
+        typer.secho(f"Could not write {ontology_dir / APPLY_MARKER_FILENAME}: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_USAGE) from exc
+
+
+def _require_marker_matches(ontology_dir: Path, record: "dict[str, Any]") -> None:
+    """Refuse a push when the app's ontology moved since the local tree was rendered.
+
+    The local tree is a full replace: pushing it over edits made in the app in
+    between would silently revert them. No marker (the user never ran
+    `schema apply`, or cleaned caches) → warn and continue.
+    """
+    marker_path = ontology_dir / APPLY_MARKER_FILENAME
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        typer.secho(
+            "note: no local `schema apply` marker found; the push replaces the app's ontology with this checkout.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+        return
+    base = marker.get("base_ontology_fingerprint")
+    current = record.get("base_ontology_fingerprint")
+    if base and current and base != current:
+        typer.secho(
+            "The app's ontology changed since `cassis schema apply` rendered this checkout: pushing would revert "
+            "those edits. Run `cassis ontology pull`, resolve the differences in git, run `cassis schema apply` "
+            "again, then push.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(EXIT_VALIDATION_FAILED)
+
+
+def _plan_or_fetch(
+    ddl_file: Optional[Path],
+    plan_id: Optional[str],
+    *,
+    warehouse: bool = False,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    complete_source: bool,
+    poll_interval: float,
+    timeout: float,
+    json_output: bool,
+) -> "dict[str, Any]":
+    """A rendered terminal plan record: planned from `ddl_file` / the warehouse, or fetched (and awaited) by id."""
+    if ddl_file is not None or warehouse:
+        return _plan(
+            ddl_file,
+            warehouse=warehouse,
+            api_url=api_url,
+            api_key=api_key,
+            project_id=project_id,
+            complete_source=complete_source,
+            poll_interval=poll_interval,
+            timeout=timeout,
+            json_output=json_output,
+            out=None,
+        )
+    assert plan_id is not None
+    record = _fetch_plan(api_url=api_url, api_key=api_key, project_id=project_id, plan_id=plan_id)
+    if record.get("status") in ("planning", "applying"):
+        # Still computing, or someone else is applying it: wait for the outcome
+        # (APPLIED is terminal too, _explain_not_ready then says so).
+        record = _wait_for_plan(
+            api_url=api_url,
+            api_key=api_key,
+            project_id=project_id,
+            plan_id=plan_id,
+            terminal=_PLAN_TERMINAL,
+            what="plan",
+            poll_interval=poll_interval,
+            timeout=timeout,
+        )
+    if record.get("status") == "ready":
+        render_plan(record, err=True)
+    else:
+        _explain_not_ready(record)
+    return record
+
+
+def _write_checkout(
+    ontology_dir: Path, files: "dict[str, str]", *, json_output: bool
+) -> "tuple[list[str], list[str], list[dict[str, str]]]":
+    """Write the rendered tree under `ontology_dir`; prune stale files git can restore. Same rules as `ontology pull`.
+
+    Unchanged files are not rewritten (and not listed), so the `~` lines below
+    are the files the plan actually touched.
+    """
+    written, deleted, kept = sync_ontology_tree(ontology_dir, files, skip_unchanged=True)
+    if not json_output:
+        for rel in written:
+            typer.echo(f"  ~ {rel}")
+        for rel in deleted:
+            typer.echo(f"  - {rel}")
+    return written, deleted, kept
+
+
+def _read_ddl(ddl_file: Path) -> str:
+    try:
+        ddl_text = ddl_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        typer.secho(f"Cannot read {ddl_file}: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_USAGE) from exc
+    if not ddl_text.strip():
+        typer.secho("DDL file is empty.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_USAGE)
+    size = len(ddl_text.encode("utf-8"))
+    if size > MAX_DDL_BYTES:
+        typer.secho(
+            f"DDL file too large ({size / (1024 * 1024):.1f} MB, limit {MAX_DDL_BYTES // (1024 * 1024)} MB).",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(EXIT_USAGE)
+    return ddl_text
+
+
+def _plan(
+    ddl_file: Optional[Path],
+    *,
+    warehouse: bool = False,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    complete_source: bool,
+    poll_interval: float,
+    timeout: float,
+    json_output: bool,
+    out: Optional[Path],
+) -> "dict[str, Any]":
+    """Start a plan for `ddl_file` (or the warehouse), wait for it, render it. Return the terminal plan record."""
+    try:
+        if warehouse:
+            record = post_schema_plan_warehouse(api_url=api_url, api_key=api_key, project_id=project_id)
+        else:
+            assert ddl_file is not None
+            ddl_text = _read_ddl(ddl_file)
+            record = post_schema_plan(
+                api_url=api_url, api_key=api_key, project_id=project_id, ddl=ddl_text, complete_source=complete_source
+            )
+    except SchemaPlanConflictError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_VALIDATION_FAILED) from exc
+    except (AuthError, ApiError) as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_TRANSPORT) from exc
+    plan_id = str(record["id"])
+    typer.echo(f"Schema plan started: {plan_id}", err=True)
+    try:
+        record = _wait_for_plan(
+            api_url=api_url,
+            api_key=api_key,
+            project_id=project_id,
+            plan_id=plan_id,
+            terminal=_PLAN_TERMINAL,
+            what="plan",
+            poll_interval=poll_interval,
+            timeout=timeout,
+        )
+    except KeyboardInterrupt:
+        typer.secho(
+            f"Interrupted. The plan keeps computing server-side; resume with: cassis schema apply --plan {plan_id}",
+            err=True,
+        )
+        raise typer.Exit(EXIT_INTERRUPTED)
+    if out is not None:
+        try:
+            out.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+        except OSError as exc:
+            typer.secho(f"Could not write {out}: {exc}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(EXIT_USAGE) from exc
+    if record.get("status") == "ready":
+        render_plan(record, err=json_output)
+        if plan_is_empty(record):
+            typer.secho("✓ Schema is up to date.", fg=typer.colors.GREEN, err=json_output)
+        else:
+            typer.secho(f"✓ Plan ready: {plan_id}", fg=typer.colors.GREEN, err=json_output)
+    else:
+        _explain_not_ready(record)
+    return record
+
+
+def _explain_not_ready(record: "dict[str, Any]") -> None:
+    status = record.get("status")
+    error = record.get("error") or ""
+    if status == "failed":
+        typer.secho(f"Plan failed: {error or 'unknown error'}", fg=typer.colors.RED, err=True)
+    elif status == "applied":
+        typer.secho("Schema plan already applied.", fg=typer.colors.YELLOW, err=True)
+    elif status == "applying":
+        typer.secho(
+            "Schema plan is being applied right now (by the app or another push). Wait for it to finish; "
+            "`cassis status` shows the outcome.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+    elif status in ("stale", "expired"):
+        typer.secho(f"{error or status.capitalize()} Plan again with the DDL file.", fg=typer.colors.RED, err=True)
+    elif status == "cancelled":
+        typer.secho("Plan was cancelled.", fg=typer.colors.YELLOW, err=True)
+    else:
+        typer.secho(f"Plan ended with unexpected status: {status}", fg=typer.colors.RED, err=True)
+
+
+def _fetch_plan(*, api_url: str, api_key: str, project_id: str, plan_id: str) -> "dict[str, Any]":
+    try:
+        return get_schema_plan(api_url=api_url, api_key=api_key, project_id=project_id, plan_id=plan_id)
+    except (AuthError, ApiError) as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_TRANSPORT) from exc
+
+
+def _wait_for_plan(
     *,
     api_url: str,
     api_key: str,
     project_id: str,
-    run_id: str,
+    plan_id: str,
+    terminal: "set[str]",
+    what: str,
     poll_interval: float,
     timeout: float,
 ) -> "dict[str, Any]":
-    """Poll until the detection run reaches a terminal status."""
-    deadline = time.monotonic() + timeout
-    consecutive_failures = 0
-    while True:
-        try:
-            run = get_source_change_run(api_url=api_url, api_key=api_key, project_id=project_id, run_id=run_id)
-            consecutive_failures = 0
-        except AuthError as exc:
-            typer.secho(str(exc), fg=typer.colors.RED, err=True)
-            raise typer.Exit(EXIT_TRANSPORT) from exc
-        except ApiError as exc:
-            consecutive_failures += 1
-            if consecutive_failures >= _MAX_CONSECUTIVE_POLL_FAILURES:
-                typer.secho(str(exc), fg=typer.colors.RED, err=True)
-                raise typer.Exit(EXIT_TRANSPORT) from exc
-            time.sleep(poll_interval)
-            continue
+    """Poll the plan record until its status is in `terminal`. Exits 3 on timeout, auth or repeated poll failures."""
 
-        if run.get("status") in _TERMINAL_RUN_STATUSES:
-            return run
+    def fetch() -> "dict[str, Any]":
+        return get_schema_plan(api_url=api_url, api_key=api_key, project_id=project_id, plan_id=plan_id)
 
-        if time.monotonic() >= deadline:
-            typer.secho(
-                f"Timed out after {timeout:.0f}s: the detection run is still {run.get('status', '?')}.",
-                fg=typer.colors.YELLOW,
-                err=True,
-            )
-            raise typer.Exit(EXIT_TRANSPORT)
-        time.sleep(poll_interval)
+    def on_timeout(record: "dict[str, Any]") -> None:
+        resume = (
+            f"resume with: cassis schema apply --plan {plan_id}"
+            if what == "plan"
+            else "`cassis status` shows the outcome once it finishes"
+        )
+        typer.secho(
+            f"Timed out after {timeout:.0f}s: the {what} is still {record.get('status', '?')}. "
+            f"It keeps running server-side; {resume}",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+
+    return poll_until(
+        fetch,
+        lambda record: record.get("status") in terminal,
+        poll_interval=poll_interval,
+        timeout=timeout,
+        on_timeout=on_timeout,
+    )

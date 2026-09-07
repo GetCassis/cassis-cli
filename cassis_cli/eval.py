@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import time
 from pathlib import Path
 from typing import Any, List, Optional
 from uuid import UUID
@@ -36,6 +35,8 @@ from cassis_cli.common import (
     EXIT_USAGE,
     EXIT_VALIDATION_FAILED,
     collect_tree,
+    echo_poll_retry,
+    poll_until,
     require_api_key,
     resolve_project_id,
 )
@@ -541,12 +542,6 @@ def run(
     raise typer.Exit(EXIT_VALIDATION_FAILED)
 
 
-# Consecutive poll failures tolerated before giving up: covers transient
-# blips (LB hiccup, brief network loss) without letting a permanently-broken
-# poll (deleted run/project) spin until --timeout.
-_MAX_CONSECUTIVE_POLL_FAILURES = 5
-
-
 def _wait_for_run(
     *,
     api_url: str,
@@ -566,47 +561,49 @@ def _wait_for_run(
     revoked key can't succeed), or after several consecutive poll failures.
     The server-side run keeps going in all three cases.
     """
-    deadline = time.monotonic() + timeout
-    last_line = ""
-    failures = 0
-    while time.monotonic() < deadline:
-        try:
-            run_record = get_eval_run(api_url=api_url, api_key=api_key, project_id=project_id, run_id=run_id)
-            results = get_eval_run_results(api_url=api_url, api_key=api_key, project_id=project_id, run_id=run_id)
-        except AuthError as exc:
-            typer.secho(f"{exc} The run keeps going server-side.", fg=typer.colors.RED, err=True)
-            raise typer.Exit(EXIT_TRANSPORT) from exc
-        except ApiError as exc:
-            failures += 1
-            if failures >= _MAX_CONSECUTIVE_POLL_FAILURES:
-                typer.secho(
-                    f"Polling failed {failures} times in a row ({exc}). "
-                    "Giving up — the run keeps going server-side; see the webapp's Evals page.",
-                    fg=typer.colors.RED,
-                    err=True,
-                )
-                raise typer.Exit(EXIT_TRANSPORT) from exc
-            # A transient poll failure shouldn't kill a multi-minute run; keep waiting.
-            typer.secho(f"(poll failed, retrying: {exc})", fg=typer.colors.YELLOW, err=True)
-            time.sleep(poll_interval)
-            continue
-        failures = 0
+    last_line = {"text": ""}
 
+    def fetch() -> "tuple[dict[str, Any], list[dict[str, Any]]]":
+        run_record = get_eval_run(api_url=api_url, api_key=api_key, project_id=project_id, run_id=run_id)
+        results = get_eval_run_results(api_url=api_url, api_key=api_key, project_id=project_id, run_id=run_id)
+        return run_record, results
+
+    def on_progress(snapshot: "tuple[dict[str, Any], list[dict[str, Any]]]") -> None:
+        _run_record, results = snapshot
         done = len(results)
         passed = sum(1 for r in results if r.get("status") == _PASSED)
         line = f"{done}/{total} cases done — {passed} ✓ {done - passed} ✗"
-        if line != last_line:
+        if line != last_line["text"]:
             typer.echo(line, err=json_output)
-            last_line = line
+            last_line["text"] = line
 
-        if run_record.get("status") in _TERMINAL_RUN_STATUSES:
-            return run_record, results
-        time.sleep(poll_interval)
+    def on_auth_error(exc: AuthError) -> None:
+        typer.secho(f"{exc} The run keeps going server-side.", fg=typer.colors.RED, err=True)
 
-    typer.secho(
-        f"Timed out after {timeout:.0f}s waiting for run {run_id}. "
-        "The run keeps going server-side — see the webapp's Evals page.",
-        fg=typer.colors.YELLOW,
-        err=True,
+    def on_give_up(exc: ApiError, failures: int) -> None:
+        typer.secho(
+            f"Polling failed {failures} times in a row ({exc}). "
+            "Giving up — the run keeps going server-side; see the webapp's Evals page.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+
+    def on_timeout(_snapshot: "tuple[dict[str, Any], list[dict[str, Any]]]") -> None:
+        typer.secho(
+            f"Timed out after {timeout:.0f}s waiting for run {run_id}. "
+            "The run keeps going server-side — see the webapp's Evals page.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+
+    return poll_until(
+        fetch,
+        lambda snapshot: snapshot[0].get("status") in _TERMINAL_RUN_STATUSES,
+        poll_interval=poll_interval,
+        timeout=timeout,
+        on_timeout=on_timeout,
+        on_progress=on_progress,
+        on_auth_error=on_auth_error,
+        on_retry=echo_poll_retry,
+        on_give_up=on_give_up,
     )
-    raise typer.Exit(EXIT_TRANSPORT)
