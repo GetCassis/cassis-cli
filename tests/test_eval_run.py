@@ -4,6 +4,7 @@ import httpx
 import pytest
 from cassis_cli.api import (
     ApiError,
+    EvalBranchNotFoundError,
     EvalRunActiveError,
     EvalStartValidationError,
     get_eval_run,
@@ -477,3 +478,242 @@ class TestEvalApiClient:
             transport=httpx.MockTransport(handler),
         )
         assert seen["url"] == f"https://api.example.com/api/ci/projects/{PROJECT_ID}/eval/runs"
+
+
+def _failing_handler(result_payload):
+    """start → completed, with one failing case carrying `result_payload`."""
+
+    def handler(request):
+        url = str(request.url)
+        if request.method == "POST" and url.endswith("/eval/runs"):
+            return httpx.Response(201, json=_run_body(total=1))
+        if url.endswith(f"/eval/runs/{RUN_ID}"):
+            return httpx.Response(
+                200,
+                json=_run_body(status="completed", total=1, summary={"total": 1, "passed": 0, "accuracy": 0.0}),
+            )
+        if url.endswith("/results"):
+            return httpx.Response(200, json=[result_payload])
+        raise AssertionError(f"unexpected request: {request.method} {url}")
+
+    return handler
+
+
+def _invoke_failing(repo, monkeypatch, result_payload):
+    _mock_api(monkeypatch, _failing_handler(result_payload))
+    return runner.invoke(app, ["eval", "run", str(repo), "--project", PROJECT_ID, "--api-key", "sk-k6-test"])
+
+
+class TestFailureEvidence:
+    """A failed case has to be diagnosable from this output alone (no webapp)."""
+
+    def test_missing_concept_prints_its_concepts(self, repo, monkeypatch):
+        # This status sets no `error`, so printing only `error` showed nothing.
+        payload = {
+            "question": "Revenue by cohort?",
+            "status": "missing_concept",
+            "generated_sql": None,
+            "duration_seconds": 4.0,
+            "error": "Concepts missing from the ontology: cohort",
+            "missing_concepts": [{"name": "cohort", "kind": "dimension"}],
+        }
+        result = _invoke_failing(repo, monkeypatch, payload)
+        assert result.exit_code == 1, result.output
+        assert "Missing concepts: cohort" in result.output
+
+    def test_judge_rejection_prints_its_reasoning(self, repo, monkeypatch):
+        # Also sets no `error` of its own on older servers.
+        payload = {
+            "question": "Revenue last month?",
+            "status": "failed",
+            "generated_sql": "SELECT sum(net) FROM orders",
+            "duration_seconds": 9.0,
+            "error": None,
+            "judge_verdict": "not_equivalent",
+            "judge_reasoning": "The generated SQL sums net revenue; the gold SQL sums gross.",
+        }
+        result = _invoke_failing(repo, monkeypatch, payload)
+        assert result.exit_code == 1, result.output
+        assert "Judge verdict: not_equivalent" in result.output
+        assert "sums net revenue" in result.output
+
+    def test_data_mismatch_prints_counts_and_both_sql(self, repo, monkeypatch):
+        payload = {
+            "question": "Revenue last month?",
+            "status": "failed",
+            "generated_sql": "SELECT sum(amount) FROM orders",
+            "gold_sql": "SELECT sum(amount) FROM orders WHERE paid",
+            "duration_seconds": 7.0,
+            "error": "Data mismatch: 1 of 1 compared row positions differ",
+            "expected_row_count": 1,
+            "actual_row_count": 1,
+        }
+        result = _invoke_failing(repo, monkeypatch, payload)
+        assert result.exit_code == 1, result.output
+        assert "Rows: 1 actual vs 1 expected" in result.output
+        assert "Generated SQL:" in result.output
+        assert "SELECT sum(amount) FROM orders" in result.output
+        assert "Gold SQL:" in result.output
+        assert "WHERE paid" in result.output
+
+    def test_row_values_are_never_printed(self, repo, monkeypatch):
+        """Values ride in --json, not the CI log — see `_print_failure_evidence`."""
+        payload = {
+            "question": "Revenue last month?",
+            "status": "failed",
+            "generated_sql": "SELECT sum(amount) FROM orders",
+            "duration_seconds": 7.0,
+            "error": "Data mismatch: 1 of 1 compared row positions differ",
+            "expected_row_count": 1,
+            "actual_row_count": 1,
+            "expected_output": [{"revenue": "8675309"}],
+            "actual_output": [{"revenue": "1234567"}],
+        }
+        result = _invoke_failing(repo, monkeypatch, payload)
+        assert "8675309" not in result.output
+        assert "1234567" not in result.output
+
+    def test_json_output_carries_the_row_values(self, repo, monkeypatch):
+        payload = {
+            "question": "Revenue last month?",
+            "status": "failed",
+            "generated_sql": "SELECT sum(amount) FROM orders",
+            "duration_seconds": 7.0,
+            "error": "Data mismatch: 1 of 1 compared row positions differ",
+            "expected_output": [{"revenue": "8675309"}],
+            "actual_output": [{"revenue": "1234567"}],
+        }
+        _mock_api(monkeypatch, _failing_handler(payload))
+        result = runner.invoke(
+            app,
+            ["eval", "run", str(repo), "--project", PROJECT_ID, "--api-key", "sk-k6-test", "--json"],
+        )
+        assert result.exit_code == 1, result.output
+        body = json.loads(result.stdout)
+        assert body["results"][0]["expected_output"] == [{"revenue": "8675309"}]
+
+    def test_long_error_says_it_was_truncated(self, repo, monkeypatch):
+        payload = {
+            "question": "Revenue last month?",
+            "status": "gold_sql_error",
+            "generated_sql": None,
+            "duration_seconds": 1.0,
+            "error": "Gold SQL execution failed: " + ("x" * 400),
+        }
+        result = _invoke_failing(repo, monkeypatch, payload)
+        assert "truncated" in result.output
+
+    def test_live_case_gold_sql_is_labelled(self, repo, monkeypatch):
+        payload = {
+            "question": "Revenue last month?",
+            "status": "failed",
+            "generated_sql": "SELECT 1",
+            "gold_sql": "SELECT 2",
+            "duration_seconds": 1.0,
+            "error": "Data mismatch: 1 of 1 compared row positions differ",
+            "gold_sql_from_live_case": True,
+        }
+        result = _invoke_failing(repo, monkeypatch, payload)
+        assert "predates snapshotting" in result.output
+
+    def test_older_server_without_the_new_fields_still_prints_the_error(self, repo, monkeypatch):
+        payload = {
+            "question": "Revenue last month?",
+            "status": "failed",
+            "generated_sql": "SELECT 1",
+            "duration_seconds": 1.0,
+            "error": "Data mismatch",
+        }
+        result = _invoke_failing(repo, monkeypatch, payload)
+        assert result.exit_code == 1, result.output
+        assert "Data mismatch" in result.output
+
+    def test_passing_case_prints_no_evidence_block(self, repo, monkeypatch):
+        payload = {
+            "question": "Revenue last month?",
+            "status": "passed",
+            "generated_sql": "SELECT sum(amount) FROM orders",
+            "gold_sql": "SELECT sum(amount) FROM orders",
+            "duration_seconds": 3.0,
+            "error": None,
+        }
+        _mock_api(monkeypatch, _failing_handler(payload))
+        result = runner.invoke(app, ["eval", "run", str(repo), "--project", PROJECT_ID, "--api-key", "sk-k6-test"])
+        assert "Generated SQL:" not in result.output
+
+
+class TestMissingBranch:
+    def test_names_the_branch_requirement_and_points_at_label(self, repo, monkeypatch):
+        def handler(request):
+            return httpx.Response(404, json={"detail": "Branch 'feat/x' not found"})
+
+        _mock_api(monkeypatch, handler)
+        result = runner.invoke(
+            app,
+            [
+                "eval",
+                "run",
+                str(repo),
+                "--project",
+                PROJECT_ID,
+                "--api-key",
+                "sk-k6-test",
+                "--branch",
+                "feat/x",
+            ],
+        )
+        # Usage error, not transport: the key and project are fine.
+        assert result.exit_code == 2, result.output
+        assert "Branch 'feat/x' not found" in result.output
+        assert "already exists in Cassis" in result.output
+        assert "--label" in result.output
+        # The old copy sent people to check their key instead.
+        assert "API key belongs to the project" not in result.output
+
+    def test_a_genuine_scope_404_keeps_the_generic_hint(self):
+        def handler(request):
+            return httpx.Response(404, json={"detail": "Project not found"})
+
+        with pytest.raises(ApiError) as exc:
+            post_eval_run_start(
+                api_url="https://api.example.com",
+                api_key="sk-k6-test",
+                project_id=PROJECT_ID,
+                files={"_project.yml": "display_name: T\n"},
+                branch=None,
+                label=None,
+                case_ids=None,
+                transport=httpx.MockTransport(handler),
+            )
+        assert not isinstance(exc.value, EvalBranchNotFoundError)
+        assert "Check --project" in str(exc.value)
+
+
+class TestSqlPrintingIsBounded:
+    """A line cap alone bounds nothing when the SQL is one very long line."""
+
+    def test_a_single_enormous_line_is_truncated(self, repo, monkeypatch):
+        payload = {
+            "question": "Revenue last month?",
+            "status": "failed",
+            "generated_sql": "SELECT " + ("x" * 40000),
+            "duration_seconds": 1.0,
+            "error": "Data mismatch: 1 of 1 compared row positions differ",
+        }
+        result = _invoke_failing(repo, monkeypatch, payload)
+        assert "truncated" in result.output
+        # Comfortably under the raw 40k, with room for the rest of the report.
+        assert len(result.output) < 10000
+
+    def test_normal_sql_still_prints_in_full(self, repo, monkeypatch):
+        sql = "SELECT sum(amount)\nFROM orders\nWHERE paid"
+        payload = {
+            "question": "Revenue last month?",
+            "status": "failed",
+            "generated_sql": sql,
+            "duration_seconds": 1.0,
+            "error": "Data mismatch: 1 of 1 compared row positions differ",
+        }
+        result = _invoke_failing(repo, monkeypatch, payload)
+        assert "WHERE paid" in result.output
+        assert "truncated" not in result.output

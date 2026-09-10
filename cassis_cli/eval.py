@@ -14,6 +14,7 @@ from cassis_cli.api import (
     DEFAULT_API_URL,
     ApiError,
     AuthError,
+    EvalBranchNotFoundError,
     EvalCaseExistsError,
     EvalCaseGoldSqlError,
     EvalCaseNotFoundError,
@@ -55,6 +56,15 @@ _STATUS_COLORS = {
     "missing_concept": typer.colors.YELLOW,
     "plan_unexecutable": typer.colors.YELLOW,
 }
+
+# Caps on the evidence printed under a failed case. Bounded so a suite of
+# failures stays readable in a CI log, and always announced when they bite.
+_MAX_ERROR_CHARS = 200
+_MAX_REASONING_CHARS = 500
+_MAX_SQL_LINES = 20
+# A line cap alone bounds nothing: a gold SQL written as one long line in a YAML
+# case is a single line of any size, printed twice per failing case.
+_MAX_SQL_CHARS = 2000
 
 
 def _run_page_url(app_url: str, project_id: str, run_id: str) -> str:
@@ -118,6 +128,84 @@ def _print_validation_failure(detail: object, base_path: str) -> None:
         typer.secho(str(detail), fg=typer.colors.RED, err=True)
 
 
+def _shorten(text: str, limit: int) -> str:
+    """Shorten to `limit` characters and say so. A silent cut can drop the cause."""
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}... (truncated, {len(text)} chars)"
+
+
+def _print_sql(label: str, sql: str) -> None:
+    """Print SQL under a failed case, bounded on both lines and characters."""
+    lines = sql.strip().splitlines()
+    typer.echo(f"      {label}:")
+    budget = _MAX_SQL_CHARS
+    shown = 0
+    for line in lines[:_MAX_SQL_LINES]:
+        if budget <= 0:
+            break
+        if len(line) > budget:
+            typer.echo(f"        {line[:budget]}... (truncated, {len(line)} chars)")
+            budget = 0
+        else:
+            typer.echo(f"        {line}")
+            budget -= len(line)
+        shown += 1
+    if shown < len(lines):
+        typer.echo(f"        ... ({len(lines) - shown} more lines)")
+
+
+def _print_failure_evidence(r: dict[str, Any]) -> None:
+    """Print what a failed case needs to be diagnosed here, without row values.
+
+    Which field carries the reason depends on the status: a missing-concept
+    failure explains itself through `missing_concepts`, a judge rejection
+    through `judge_reasoning`, a data mismatch through `error` and the row
+    counts. Printing only `error` — as this did — showed nothing at all for the
+    first two.
+
+    Expected and actual row values are deliberately not printed. They ride in
+    `--json` and the webapp instead: `cassis verify` output is a CI job log, and
+    warehouse values in a job log travel further than whoever reads it intends.
+
+    Every field is read with `.get`, so an older server that returns none of
+    them degrades to the error line alone.
+    """
+    error = r.get("error")
+    if error:
+        typer.echo(f"      {_shorten(str(error), _MAX_ERROR_CHARS)}")
+
+    names = [str(c["name"]) for c in (r.get("missing_concepts") or []) if isinstance(c, dict) and c.get("name")]
+    if names:
+        typer.echo(f"      Missing concepts: {', '.join(names)}")
+
+    if r.get("judge_verdict"):
+        typer.echo(f"      Judge verdict: {r['judge_verdict']}")
+    if r.get("judge_reasoning"):
+        typer.echo(f"      Judge reasoning: {_shorten(str(r['judge_reasoning']), _MAX_REASONING_CHARS)}")
+
+    expected, actual = r.get("expected_row_count"), r.get("actual_row_count")
+    if expected is not None or actual is not None:
+        shown_actual = "-" if actual is None else str(actual)
+        shown_expected = "-" if expected is None else str(expected)
+        typer.echo(f"      Rows: {shown_actual} actual vs {shown_expected} expected")
+
+    # The agent's own words, for the statuses that carry no other explanation
+    # (a conversational reply instead of a plan, for one).
+    content = r.get("content")
+    if content and not error and not names and not r.get("judge_reasoning"):
+        typer.echo(f"      {_shorten(str(content), _MAX_ERROR_CHARS)}")
+
+    if r.get("generated_sql"):
+        _print_sql("Generated SQL", str(r["generated_sql"]))
+    if r.get("gold_sql"):
+        label = "Gold SQL"
+        if r.get("gold_sql_from_live_case"):
+            label = "Gold SQL (the case as it stands now; this result predates snapshotting)"
+        _print_sql(label, str(r["gold_sql"]))
+
+
 def _print_results_table(results: list[dict[str, Any]]) -> None:
     for r in sorted(results, key=lambda r: (r.get("status") == _PASSED, r.get("question") or "")):
         status = r.get("status", "?")
@@ -129,8 +217,9 @@ def _print_results_table(results: list[dict[str, Any]]) -> None:
             question = question[:67] + "..."
         line = f"  {icon} {status:<17} {duration:>5}  {question}"
         typer.secho(line, fg=color)
-        if r.get("error"):
-            typer.echo(f"      {str(r['error'])[:200]}")
+        if status == _PASSED:
+            continue
+        _print_failure_evidence(r)
 
 
 def _print_summary(run: dict[str, Any]) -> None:
@@ -448,7 +537,13 @@ def run(
     named case(s) run — e.g. proving one fresh `add-case` in seconds instead of
     rerunning the whole suite. Exits 0 when the run completes with every case
     passed, 1 on any failed case / failed run / invalid tree, 2 on usage
-    errors, 3 on transport errors or --timeout.
+    errors (including a --branch the project does not have), 3 on transport
+    errors or --timeout.
+
+    Failed cases print the generated SQL as the agent wrote it. Row values are
+    never printed (they are in --json), but an agent that read your data while
+    planning can carry a value it saw into a SQL literal — so treat this output
+    as sensitive as the queries themselves.
     """
     api_key = require_api_key(api_key)
     for case_id in case or []:
@@ -485,6 +580,17 @@ def run(
     except EvalStartValidationError as exc:
         _print_validation_failure(exc.detail, base_path)
         raise typer.Exit(EXIT_VALIDATION_FAILED) from exc
+    except EvalBranchNotFoundError as exc:
+        # Bad input, not a transport or permissions problem — so exit 2, and say
+        # what --branch actually takes instead of pointing at the API key.
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        typer.echo(
+            "--branch runs against an ontology branch that already exists in Cassis "
+            "(create it in the webapp, or push it with `cassis ontology push`). "
+            "To label a run after your local checkout's branch, use --label instead.",
+            err=True,
+        )
+        raise typer.Exit(EXIT_USAGE) from exc
     except ApiError as exc:  # covers AuthError and EvalRunActiveError too
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(EXIT_TRANSPORT) from exc

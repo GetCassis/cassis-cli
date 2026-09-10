@@ -82,6 +82,17 @@ cassis eval run --project ... --case 019f0000-0000-7000-8000-0000000000ca
 
 # Start the run and return immediately (poll in the webapp):
 cassis eval run --project ... --no-wait
+```
+
+Under each failed case `eval run` prints what is needed to diagnose it: the SQL the agent
+generated, the gold SQL it was compared against, how many rows each side returned, any concepts
+the agent found missing, and the judge's reasoning when a judge graded the case. The expected and
+actual row *values* are deliberately not printed — they are in `--json` and in the Cassis app.
+Note that the **generated SQL is printed as the agent wrote it**, and an agent that read your data
+while planning can carry a value it saw into a literal in that SQL. Treat `eval run` output as
+carrying the same sensitivity as the queries themselves when you decide who can read your CI logs.
+
+```bash
 
 # Probe questions through the text-to-SQL agent using the local ontology files
 # (one full agent run per question, expect ~30-90s each; repeat -q for several):
@@ -175,7 +186,7 @@ cassis ontology fmt --check
 | ---- | ------------------------------------------------------------------------------ |
 | 0    | Ontology is valid (check) / pulled (pull) / uploaded (upload) / eval run completed all-passed (eval run) / every probe completed (test — whatever its outcome; probes are informational, don't gate CI on them) |
 | 1    | Validation failed (check: findings printed; upload: nothing imported; eval run: invalid tree, failed cases, or failed/cancelled run; test: invalid tree or a probe failed; add-case: duplicate question or gold SQL that does not run; delete-case: no such case in the project; issues: no such issue or occurrence in the project; issues analyze: failed or cancelled analysis run; schema plan/apply: the plan failed (unparseable or truncated DDL), is stale or expired, the apply failed, or the project won't accept it (a plan is being applied, a DDL was given for a warehouse-connected project, or --warehouse for a DDL-only one)) |
-| 2    | Usage error (missing API key or project, no ontology directory, unreadable file, tree over the size limits) |
+| 2    | Usage error (missing API key or project, no ontology directory, unreadable file, tree over the size limits, `eval run --branch` naming an ontology branch the project does not have) |
 | 3    | Transport/API error (unreachable API, invalid key, inaccessible project, unexpected response), another eval run or issue analysis already active, out of credits, or `--timeout` reached |
 
 Commands that send the local tree (`check`, `fmt`, `upload`, `eval run`, `test`) accept up to

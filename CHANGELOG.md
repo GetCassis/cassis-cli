@@ -3,6 +3,38 @@
 Versions match the releases on [PyPI](https://pypi.org/project/cassis-cli/); dates are the
 PyPI upload date.
 
+## Unreleased
+
+## 2.1.0 (2026-09-10)
+
+### Added
+
+- `eval run` prints the evidence for a failed case: the generated SQL, the gold SQL it was
+  compared against, how many rows each side returned, the missing concepts, and the judge's
+  verdict and reasoning. Which of those appears follows the failure — a missing-concept
+  failure has no error text of its own, and used to print nothing at all. Expected and actual
+  row *values* are not printed: `verify` output is a CI job log. They are in `--json`. The
+  generated SQL is printed as the agent wrote it, so a value the agent read while planning can
+  appear in a SQL literal — worth knowing when deciding who can read your CI logs.
+- Long error text and judge reasoning now say when they were truncated, instead of being cut
+  silently, and SQL is capped at 20 lines and 2000 characters with the remainder counted.
+
+### Changed
+
+- `eval run --branch` with a name the project doesn't have now explains that `--branch` takes an
+  ontology branch that already exists in Cassis and points at `--label` for naming a run after
+  the local checkout's branch. It exits **2** (usage) rather than 3 (transport), since the API
+  key and project are fine.
+
+- Doctrine v7 in the bundled modeling guide (`cassis ontology pull` / `fmt` write it as
+  `cassis/AGENTS.md`). A metric's definition (columns, thresholds, time windows, filters)
+  lives only in its structured fields; every prose field, the metric's own `description`
+  and `notes` included, says what the number means, not how it is computed. Column
+  descriptions state facts, not SQL fragments. Prose never records a measurement
+  (counts, shares, "as of" statements): sampling verifies a stable fact and only that
+  fact is written. A prose field may stay short or empty when the structured fields say
+  it all. `fmt` rewrites an older `AGENTS.md` in place.
+
 ## 2.0.0 (2026-09-07)
 
 ### Removed

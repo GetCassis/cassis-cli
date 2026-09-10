@@ -106,6 +106,21 @@ class EvalRunActiveError(ApiError):
     """Another eval run is already active for the project (409)."""
 
 
+class EvalBranchNotFoundError(ApiError):
+    """`--branch` named an ontology branch the project does not have (404)."""
+
+
+def _is_branch_not_found(detail: object) -> bool:
+    """Whether a 404 detail is the start endpoint's missing-branch message.
+
+    Wire contract with `start_eval_run` in backend `endpoints/ci/eval.py`,
+    matched the way `delete_eval_case` matches its own 404 text. A server that
+    words it differently falls through to the generic project-scope error, so an
+    older server degrades rather than misreporting.
+    """
+    return isinstance(detail, str) and detail.startswith("Branch ") and detail.endswith(" not found")
+
+
 def _project_scope_error(response: httpx.Response) -> ApiError:
     # Surface the server's own message when it names the missing resource
     # (e.g. "Branch 'x' not found") — the generic hint covers the rest.
@@ -544,6 +559,11 @@ def post_eval_run_start(
             "An eval run is already active for this project — wait for it to finish or cancel it "
             "(in the webapp's Evals page, or with the run id printed when it was started)."
         )
+    if response.status_code == 404 and _is_branch_not_found(_detail_or_text(response)):
+        # Distinct from a project-scope 404: the key and project are fine, the
+        # branch name is not, and the generic copy sends the user to check
+        # permissions instead.
+        raise EvalBranchNotFoundError(_detail_or_text(response))
     if response.status_code in (403, 404):
         raise _project_scope_error(response)
     if response.status_code >= 400:

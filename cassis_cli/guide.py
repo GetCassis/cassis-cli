@@ -31,7 +31,7 @@ GUIDE_FILENAME = "AGENTS.md"
 # Monotonic version of the doctrine text below. Bump it whenever
 # ontology_design_guide.md changes (a backend test enforces the pairing) — it
 # is what lets an older writer recognize a newer guide and leave it alone.
-DOCTRINE_VERSION = 6
+DOCTRINE_VERSION = 7
 
 # Must stay byte-identical to backend/app/services/ontology_guide.py::_BANNER —
 # the server-side git export writes the same file, and differing banners would
