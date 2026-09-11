@@ -5,6 +5,26 @@ PyPI upload date.
 
 ## Unreleased
 
+## 2.2.0 (2026-09-10)
+
+### Added
+
+- `--domain` on `cassis issues list`: triage one ontology domain at a time. A domain path also
+  covers the domains nested under it, so `--domain sales` includes `sales/pipeline`.
+- `cassis schema plan <ddl> --dry-run`: compute the plan in the request and keep nothing
+  server-side (no plan to apply or resume, the project's current plan untouched), for a schema
+  change that is still a PR. `--write-checkout` also writes the ontology files the plan would
+  produce under `<path>/<base-path>`, to commit next to the schema change; `--warehouse` and
+  `--json` work as for a regular plan. Needs a server with the preview routes (8.7+); an older
+  one answers with the upgrade hint.
+
+### Changed
+
+- `cassis issues list` lines now carry the issue's primary ontology domain between the status and
+  the title (`-` when Cassis could not attach one), and `cassis issues show` prints a `Domains:`
+  field. Scripts that parse the list output need updating; `--json` is the stable shape. Against
+  an older server the domain reads `-` and `--domain` is ignored.
+
 ## 2.1.0 (2026-09-10)
 
 ### Added
@@ -18,6 +38,12 @@ PyPI upload date.
   appear in a SQL literal — worth knowing when deciding who can read your CI logs.
 - Long error text and judge reasoning now say when they were truncated, instead of being cut
   silently, and SQL is capped at 20 lines and 2000 characters with the remainder counted.
+- `cassis schema plan <ddl> --dry-run`: compute the plan in the request and keep nothing
+  server-side (no plan to apply or resume, the project's current plan untouched), for a schema
+  change that is still a PR. `--write-checkout` also writes the ontology files the plan would
+  produce under `<path>/<base-path>`, to commit next to the schema change; `--warehouse` and
+  `--json` work as for a regular plan. Needs a server with the preview routes (8.6+); an older
+  one answers with the upgrade hint.
 
 ### Changed
 

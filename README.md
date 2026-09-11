@@ -13,10 +13,10 @@ Validate, test and evaluate your ontology from your terminal, then publish it. T
 - `cassis ontology test` runs individual questions through the text-to-SQL agent using your local ontology files, so you can check that a change actually works (e.g. a new column gets picked) — where `eval run` only checks for regressions on existing eval cases.
 - `cassis eval add-case` adds a gold question/SQL case to the project's eval suite — after fixing an ontology issue, add the question users were failing on so `eval run` guards it from regressing.
 - `cassis eval list-cases` and `cassis eval delete-case` maintain the suite: list the current cases with their ids, and prune one that is stale or wrong (e.g. its gold SQL encodes a definition the ontology has since changed).
-- `cassis schema plan <ddl>` (or `--warehouse` on a project connected to a warehouse) previews what a schema update would change before anything is applied: the source schema diff, the ontology changes Cassis will make (every change on a table placed in the ontology, with everything a drop takes with it) and warnings, terraform-style. `cassis schema apply <ddl>` (or `--plan <id>`) writes the resulting ontology files into the local checkout, app untouched, for review with `git diff`. `cassis schema push <ddl> [--publish]` pushes the new schema and the local ontology to the app (`--yes` in CI). The file speaks only for the schemas it contains — pass `--complete` when it is the project's complete source schema so schemas absent from it are treated as dropped. With `--warehouse` the server introspects the connected warehouse instead of parsing a file; the plan is always whole-source.
+- `cassis schema plan <ddl>` (or `--warehouse` on a project connected to a warehouse) previews what a schema update would change before anything is applied: the source schema diff, the ontology changes Cassis will make (every change on a table placed in the ontology, with everything a drop takes with it) and warnings, terraform-style. `cassis schema apply <ddl>` (or `--plan <id>`) writes the resulting ontology files into the local checkout, app untouched, for review with `git diff`. `cassis schema push <ddl> [--publish]` pushes the new schema and the local ontology to the app (`--yes` in CI). The file speaks only for the schemas it contains — pass `--complete` when it is the project's complete source schema so schemas absent from it are treated as dropped. With `--warehouse` the server introspects the connected warehouse instead of parsing a file; the plan is always whole-source. `cassis schema plan <ddl> --dry-run` is the prepare-ahead variant: the plan is computed synchronously and nothing is kept in Cassis (no plan to apply or resume, the current plan untouched), so a dbt model or migration still in a PR can be planned against safely; `--write-checkout` writes the ontology files it would produce into the checkout, to commit alongside the schema change.
 - `cassis projects list` lists the projects your API key can reach — id (what `--project` and `CASSIS_PROJECT_ID` take), name, published ontology version, and data-source dialect — so a pipeline or agent can discover the project id from the terminal instead of fishing it out of a webapp URL.
 - `cassis status` shows the project's published version (number, label, git commit), whether unpublished changes await publication, the git-sync binding, a schema plan waiting to be applied, and how your local git HEAD relates to the published commit (in sync / N commits ahead / diverged). `cassis status --watch` polls until the published commit matches your local HEAD — e.g. right after merging a PR whose CI publishes the ontology — instead of watching the GitHub Actions tab.
-- `cassis issues` triages the issues Cassis raised on the project — what it found wrong while answering questions (an ontology gap, missing data) — without leaving the checkout: `issues list` (filterable by status, impact and cause), `issues show <id>` for the diagnosis, suggested action and the occurrences behind it, `issues evidence <id> <occurrence-id>` for what the agent actually saw, and `issues resolve` / `dismiss` / `reopen` once you've acted on it.
+- `cassis issues` triages the issues Cassis raised on the project — what it found wrong while answering questions (an ontology gap, missing data) — without leaving the checkout: `issues list` (filterable by status, impact, cause and ontology domain, and showing each issue's domain so you can work through one domain at a time), `issues show <id>` for the diagnosis, suggested action and the occurrences behind it, `issues evidence <id> <occurrence-id>` for what the agent actually saw, and `issues resolve` / `dismiss` / `reopen` once you've acted on it.
 - `cassis verify` runs the full local gate in one verb — `ontology fmt --check`, `ontology check`, `eval run` — stopping at the first failure. One command in a checkout ("is this change safe to merge?"), one job in CI. `--no-eval` skips the eval suite.
 
 ## Install
@@ -118,6 +118,7 @@ cassis schema plan schema.sql --complete
 cassis schema apply schema.sql --complete      # writes cassis/ locally
 cassis schema push schema.sql --complete --yes  # schema + ontology to the app
 cassis schema plan --warehouse                   # warehouse-connected projects: introspect instead
+cassis schema plan future.sql --dry-run --write-checkout  # plan a not-yet-deployed DDL, keep nothing server-side
 
 # List the projects the API key can reach (id, name, published version, dialect):
 cassis projects list
@@ -130,6 +131,9 @@ cassis issues analyze
 # Triage the issues Cassis raised (filter by --status/--impact/--cause; --json for raw output):
 cassis issues list --status open
 cassis issues show 019f0000-0000-7000-8000-0000000000e1
+
+# Work one ontology domain at a time (nested domains included):
+cassis issues list --domain sales
 
 # Read what the agent saw for one occurrence (ids from `issues show`):
 cassis issues evidence 019f0000-0000-7000-8000-0000000000e1 019f0000-0000-7000-8000-0000000000c1

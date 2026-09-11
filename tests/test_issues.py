@@ -30,6 +30,7 @@ _ISSUE = {
     "status": "open",
     "occurrence_count_cache": 3,
     "fix_proposal": None,
+    "domains": ["sales/orders", "finance"],
 }
 
 
@@ -59,7 +60,21 @@ class TestIssuesList:
 
         assert result.exit_code == 0, result.output
         assert f"/api/ci/projects/{PROJECT_ID}/issues" in seen["url"]
-        assert f"{ISSUE_ID}  wrong_answer  x3  open  Refunds are not modeled" in result.output
+        # The primary domain sits between the status and the title.
+        assert f"{ISSUE_ID}  wrong_answer  x3  open  sales/orders  Refunds are not modeled" in result.output
+
+    def test_prints_a_dash_when_no_domain_is_attached(self, monkeypatch):
+        _mock(
+            monkeypatch,
+            "get_issues",
+            get_issues,
+            lambda request: httpx.Response(200, json=[{**_ISSUE, "domains": []}]),
+        )
+
+        result = runner.invoke(app, _args("issues", "list"))
+
+        assert result.exit_code == 0, result.output
+        assert f"{ISSUE_ID}  wrong_answer  x3  open  -  Refunds are not modeled" in result.output
 
     def test_filters_go_on_the_query_string(self, monkeypatch):
         seen = {}
@@ -79,6 +94,23 @@ class TestIssuesList:
         assert "status=open" in seen["url"]
         assert "impact=no_answer" in seen["url"]
         assert "cause=missing_data" in seen["url"]
+        assert "No issues match." in result.output
+
+    def test_domain_filter_goes_on_the_query_string(self, monkeypatch):
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            # A domain path holds slashes, which httpx percent-encodes in a
+            # query value, so read the parsed params, not the raw URL.
+            seen["params"] = dict(request.url.params)
+            return httpx.Response(200, json=[])
+
+        _mock(monkeypatch, "get_issues", get_issues, handler)
+
+        result = runner.invoke(app, _args("issues", "list", "--domain", "sales/orders"))
+
+        assert result.exit_code == 0, result.output
+        assert seen["params"]["domain"] == "sales/orders"
         assert "No issues match." in result.output
 
     def test_json_output_prints_raw_response(self, monkeypatch):
@@ -126,6 +158,7 @@ class TestIssuesShow:
         assert "open  wrong_answer  ontology_gap  3 occurrence(s)" in result.output
         assert "Add refunded_cents to public.orders." in result.output
         assert "Fix proposal: none" in result.output
+        assert "Domains: sales/orders, finance" in result.output
         assert f"{OCCURRENCE_ID}  Answer omitted refunds" in result.output
 
     def test_unknown_issue_exits_one(self, monkeypatch):

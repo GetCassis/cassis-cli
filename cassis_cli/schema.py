@@ -21,6 +21,7 @@ from cassis_cli.api import (
     ApiError,
     AuthError,
     SchemaPlanConflictError,
+    SchemaPlanRejectedError,
     UploadValidationError,
     get_ontology_export,
     get_schema_export,
@@ -29,6 +30,8 @@ from cassis_cli.api import (
     post_ontology_import,
     post_schema_plan,
     post_schema_plan_apply,
+    post_schema_plan_preview,
+    post_schema_plan_preview_warehouse,
     post_schema_plan_warehouse,
 )
 from cassis_cli.common import (
@@ -229,6 +232,17 @@ def plan(
     timeout: float = _TIMEOUT_OPTION,
     json_output: bool = _JSON_OPTION,
     out: Optional[Path] = _OUT_OPTION,
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Compute the plan in the request and keep nothing server-side: no plan to apply or resume, "
+        "the project's current plan untouched. For a DDL not deployed to the warehouse yet.",
+    ),
+    write_checkout: bool = typer.Option(
+        False,
+        "--write-checkout",
+        help="With --dry-run: also write the ontology files the plan would produce under <path>/<base-path>.",
+    ),
 ) -> None:
     """Preview what a schema update would change. Nothing is applied.
 
@@ -241,11 +255,46 @@ def plan(
     whole-source. Exits 0 when the plan is ready (even when it is empty), 1
     when the plan failed (unparseable or truncated DDL, unreachable
     warehouse), 2 on usage errors, 3 on transport errors or a timeout.
+
+    --dry-run is the prepare-ahead gesture: the plan is computed synchronously
+    and nothing is kept server-side, so it works for a schema change that is
+    still a PR (a dbt model, a migration) and leaves the project's current plan
+    alone. --write-checkout then writes the resulting ontology files into the
+    checkout, to commit next to the schema change; nothing is pushed.
     """
     api_key = require_api_key(api_key)
     _require_one_source(ddl_file, warehouse)
+    if write_checkout and not dry_run:
+        typer.secho(
+            "--write-checkout needs --dry-run (use `cassis schema apply` otherwise).", fg=typer.colors.RED, err=True
+        )
+        raise typer.Exit(EXIT_USAGE)
     resolved_project = resolve_project_id(project_id, path / base_path, quiet=json_output)
     assert resolved_project is not None
+    if dry_run:
+        preview = _preview(
+            ddl_file,
+            warehouse=warehouse,
+            api_url=api_url,
+            api_key=api_key,
+            project_id=resolved_project,
+            complete_source=complete_source,
+            json_output=json_output,
+            out=out,
+        )
+        if write_checkout:
+            ontology_dir = path / base_path.strip().strip("/")
+            written, deleted, _kept = _write_checkout(ontology_dir, preview["files"], json_output=json_output)
+            typer.secho(
+                f"✓ Wrote {len(written)} ontology file(s) into {ontology_dir}"
+                + (f", deleted {len(deleted)} stale file(s)" if deleted else "")
+                + ". The app is unchanged.",
+                fg=typer.colors.GREEN,
+                err=json_output,
+            )
+        if json_output:
+            typer.echo(json.dumps(preview, indent=2))
+        raise typer.Exit(EXIT_OK)
     record = _plan(
         ddl_file,
         warehouse=warehouse,
@@ -722,6 +771,54 @@ def _plan(
     else:
         _explain_not_ready(record)
     return record
+
+
+def _preview(
+    ddl_file: Optional[Path],
+    *,
+    warehouse: bool,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    complete_source: bool,
+    json_output: bool,
+    out: Optional[Path],
+) -> "dict[str, Any]":
+    """Compute a dry-run plan for `ddl_file` (or the warehouse), render it. Return the preview record."""
+    try:
+        if warehouse:
+            preview = post_schema_plan_preview_warehouse(api_url=api_url, api_key=api_key, project_id=project_id)
+        else:
+            assert ddl_file is not None
+            preview = post_schema_plan_preview(
+                api_url=api_url,
+                api_key=api_key,
+                project_id=project_id,
+                ddl=_read_ddl(ddl_file),
+                complete_source=complete_source,
+            )
+    except (SchemaPlanRejectedError, SchemaPlanConflictError) as exc:
+        typer.secho(f"Plan failed: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_VALIDATION_FAILED) from exc
+    except (AuthError, ApiError) as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_TRANSPORT) from exc
+    if out is not None:
+        try:
+            out.write_text(json.dumps(preview, indent=2) + "\n", encoding="utf-8")
+        except OSError as exc:
+            typer.secho(f"Could not write {out}: {exc}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(EXIT_USAGE) from exc
+    # The renderer reads a plan record; a preview is one without an id.
+    record = {"status": "ready", "document": preview.get("document"), "summary": preview.get("summary")}
+    render_plan(record, err=json_output)
+    for warning in preview.get("warnings") or []:
+        typer.secho(f"  warning: {warning}", fg=typer.colors.YELLOW, err=True)
+    if plan_is_empty(record):
+        typer.secho("✓ Schema is up to date (dry run, nothing kept).", fg=typer.colors.GREEN, err=json_output)
+    else:
+        typer.secho("✓ Plan computed (dry run, nothing kept).", fg=typer.colors.GREEN, err=json_output)
+    return preview
 
 
 def _explain_not_ready(record: "dict[str, Any]") -> None:

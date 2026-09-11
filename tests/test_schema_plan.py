@@ -9,6 +9,8 @@ from cassis_cli.api import (
     post_ontology_import,
     post_schema_plan,
     post_schema_plan_apply,
+    post_schema_plan_preview,
+    post_schema_plan_preview_warehouse,
     post_schema_plan_warehouse,
 )
 from cassis_cli.main import app
@@ -115,8 +117,9 @@ def make_router(
     fingerprint="fp-1",
     error=None,
     seen=None,
+    preview_status=200,
 ):
-    """One handler for the whole flow: export, plan, checkout, apply, ontology import."""
+    """One handler for the whole flow: export, plan, preview, checkout, apply, ontology import."""
     state = {"applying": False}
 
     def handler(request):
@@ -130,6 +133,30 @@ def make_router(
             return httpx.Response(202, json=_record("planning"))
         if request.method == "POST" and path.endswith("/schema/plans/warehouse"):
             return httpx.Response(202, json=_record("planning"))
+        if request.method == "POST" and path.endswith("/schema/plans/preview"):
+            if preview_status != 200:
+                return httpx.Response(preview_status, json={"detail": error or "Is the file complete?"})
+            return httpx.Response(
+                200,
+                json={
+                    "document": document,
+                    "summary": (document or {}).get("summary") or {},
+                    "files": tree,
+                    "warnings": [],
+                    "base_ontology_fingerprint": fingerprint,
+                },
+            )
+        if request.method == "POST" and path.endswith("/schema/plans/preview/warehouse"):
+            return httpx.Response(
+                200,
+                json={
+                    "document": document,
+                    "summary": (document or {}).get("summary") or {},
+                    "files": tree,
+                    "warnings": [],
+                    "base_ontology_fingerprint": fingerprint,
+                },
+            )
         if request.method == "GET" and path.endswith("/checkout"):
             return httpx.Response(200, json={"files": tree, "warnings": []})
         if request.method == "POST" and path.endswith("/apply"):
@@ -170,6 +197,8 @@ def route(monkeypatch, handler):
     for name, original in (
         ("post_schema_plan", post_schema_plan),
         ("post_schema_plan_warehouse", post_schema_plan_warehouse),
+        ("post_schema_plan_preview", post_schema_plan_preview),
+        ("post_schema_plan_preview_warehouse", post_schema_plan_preview_warehouse),
         ("get_schema_plan", get_schema_plan),
         ("post_schema_plan_apply", post_schema_plan_apply),
         ("get_schema_plan_checkout", get_schema_plan_checkout),
@@ -243,6 +272,59 @@ class TestSchemaPlan:
         route(monkeypatch, lambda request: httpx.Response(404, json={"detail": "Not Found"}))
         result = runner.invoke(app, ["schema", "plan", str(ddl_file), "--path", str(repo), *_args()])
         assert result.exit_code == 3 and "upgrade the server" in result.output
+
+
+class TestSchemaPlanDryRun:
+    def test_dry_run_posts_the_preview_and_polls_nothing(self, repo, ddl_file, monkeypatch):
+        seen = []
+        route(monkeypatch, make_router(seen=seen))
+        result = runner.invoke(app, ["schema", "plan", str(ddl_file), "--dry-run", "--path", str(repo), *_args()])
+        assert result.exit_code == 0, result.output
+        assert [(m, p.rsplit("/schema/", 1)[-1]) for m, p, _ in seen] == [("POST", "plans/preview")]
+        assert "Schema plan started" not in result.output
+        assert "- drop column public.orders.legacy" in result.output
+        assert "✓ Plan computed (dry run, nothing kept)" in result.output
+        assert not (repo / "cassis" / "tables").exists()
+
+    def test_dry_run_write_checkout_writes_the_tree_and_no_apply_marker(self, repo, ddl_file, monkeypatch):
+        route(monkeypatch, make_router())
+        result = runner.invoke(
+            app,
+            ["schema", "plan", str(ddl_file), "--dry-run", "--write-checkout", "--path", str(repo), *_args()],
+        )
+        assert result.exit_code == 0, result.output
+        assert (repo / "cassis" / "tables" / "public" / "orders.yml").read_text() == _TREE["tables/public/orders.yml"]
+        assert not (repo / "cassis" / ".schema-apply.json").exists()
+        assert "Wrote 2 ontology file(s)" in result.output and "The app is unchanged" in result.output
+
+    def test_dry_run_warehouse_posts_the_warehouse_preview(self, repo, monkeypatch):
+        seen = []
+        route(monkeypatch, make_router(seen=seen))
+        result = runner.invoke(app, ["schema", "plan", "--warehouse", "--dry-run", "--path", str(repo), *_args()])
+        assert result.exit_code == 0, result.output
+        assert [p.rsplit("/schema/", 1)[-1] for _, p, _ in seen] == ["plans/preview/warehouse"]
+
+    def test_dry_run_json_keeps_stdout_to_the_preview(self, repo, ddl_file, monkeypatch):
+        route(monkeypatch, make_router())
+        result = runner.invoke(
+            app, ["schema", "plan", str(ddl_file), "--dry-run", "--path", str(repo), *_args("--json")]
+        )
+        assert result.exit_code == 0, result.output
+        body = json.loads(result.stdout)
+        assert "id" not in body and set(body["files"]) == set(_TREE)
+        assert "Ontology changes" in result.stderr
+
+    def test_dry_run_rejected_ddl_exits_one_with_the_server_detail(self, repo, ddl_file, monkeypatch):
+        route(monkeypatch, make_router(preview_status=400, error="Is the file complete?"))
+        result = runner.invoke(app, ["schema", "plan", str(ddl_file), "--dry-run", "--path", str(repo), *_args()])
+        assert result.exit_code == 1 and "Plan failed: Is the file complete?" in result.output
+
+    def test_write_checkout_without_dry_run_is_a_usage_error(self, repo, ddl_file, monkeypatch):
+        route(monkeypatch, make_router())
+        result = runner.invoke(
+            app, ["schema", "plan", str(ddl_file), "--write-checkout", "--path", str(repo), *_args()]
+        )
+        assert result.exit_code == 2 and "needs --dry-run" in result.output
 
 
 class TestSchemaApply:

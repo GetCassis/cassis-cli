@@ -372,6 +372,10 @@ class SchemaPlanConflictError(ApiError):
     """409 from the schema-plan routes: a plan is already active, the project is connected, the plan is stale / expired / not ready."""
 
 
+class SchemaPlanRejectedError(ApiError):
+    """400 from the preview route: the DDL does not parse or reads as truncated (the user's file, not transport)."""
+
+
 class SchemaPlanNotFoundError(ApiError):
     """404 with the server's exact detail `"Schema plan not found"` (a project-scope 404 is a different error)."""
 
@@ -460,6 +464,61 @@ def post_schema_plan_warehouse(
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
     return _schema_plan_response(response, url)
+
+
+def _schema_plan_preview_response(response: httpx.Response, url: str) -> dict[str, Any]:
+    if response.status_code == 400:
+        raise SchemaPlanRejectedError(str(_detail_or_text(response)))
+    _raise_for_schema_plan_status(response)
+    result = _parse_json_response(response, url)
+    if not isinstance(result, dict) or "document" not in result or not isinstance(result.get("files"), dict):
+        raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
+    return result
+
+
+def post_schema_plan_preview(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    ddl: str,
+    complete_source: bool = False,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> dict[str, Any]:
+    """POST /api/ci/projects/{project_id}/schema/plans/preview: plan + rendered tree, nothing persisted.
+
+    Synchronous: the server computes the plan in the request (no plan row, no
+    job), so the tree timeout applies. A DDL the server cannot parse, or that
+    reads as truncated, is a 400 → `SchemaPlanRejectedError`.
+    """
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/schema/plans/preview"
+    try:
+        with _client(timeout=ONTOLOGY_TREE_TIMEOUT_SECONDS, transport=transport) as client:
+            response = client.post(
+                url,
+                json={"ddl": ddl, "complete_source": complete_source},
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+    except httpx.HTTPError as exc:
+        raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
+    return _schema_plan_preview_response(response, url)
+
+
+def post_schema_plan_preview_warehouse(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> dict[str, Any]:
+    """POST /api/ci/projects/{project_id}/schema/plans/preview/warehouse: the warehouse twin of the preview."""
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/schema/plans/preview/warehouse"
+    try:
+        with _client(timeout=ONTOLOGY_TREE_TIMEOUT_SECONDS, transport=transport) as client:
+            response = client.post(url, headers={"Authorization": f"Bearer {api_key}"})
+    except httpx.HTTPError as exc:
+        raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
+    return _schema_plan_preview_response(response, url)
 
 
 def get_schema_plan(
@@ -790,11 +849,16 @@ def get_issues(
     status: Optional[str] = None,
     impact: Optional[str] = None,
     cause: Optional[str] = None,
+    domain: Optional[str] = None,
     transport: Optional[httpx.BaseTransport] = None,
 ) -> list[dict[str, Any]]:
     """GET /api/ci/projects/{project_id}/issues and return the issue list."""
     url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/issues"
-    params = {key: value for key, value in (("status", status), ("impact", impact), ("cause", cause)) if value}
+    params = {
+        key: value
+        for key, value in (("status", status), ("impact", impact), ("cause", cause), ("domain", domain))
+        if value
+    }
     result = _get_issue_json(url, api_key, transport, params=params)
     if not isinstance(result, list) or not all(isinstance(issue, dict) and "id" in issue for issue in result):
         raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")

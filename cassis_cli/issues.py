@@ -117,6 +117,9 @@ def list_issues(
     status: Optional[str] = typer.Option(None, "--status", help=f"Filter by status ({', '.join(STATUSES)})."),
     impact: Optional[str] = typer.Option(None, "--impact", help=f"Filter by impact ({', '.join(IMPACTS)})."),
     cause: Optional[str] = typer.Option(None, "--cause", help=f"Filter by cause ({', '.join(CAUSES)})."),
+    domain: Optional[str] = typer.Option(
+        None, "--domain", help="Filter by ontology domain path; nested domains included."
+    ),
     path: Path = _PATH_OPTION,
     project_id: Optional[str] = _PROJECT_OPTION,
     api_key: Optional[str] = _API_KEY_OPTION,
@@ -126,9 +129,11 @@ def list_issues(
 ) -> None:
     """List the project's issues, prioritized by impact then recurrence.
 
-    Prints each issue's id, impact, occurrence count, status and title; the id
-    is what `cassis issues show`, `resolve`, `dismiss` and `reopen` take. Exits
-    0 on success, 2 on usage errors, 3 on transport/API errors.
+    Prints each issue's id, impact, occurrence count, status, primary ontology
+    domain (`-` when Cassis could not attach one) and title; the id is what
+    `cassis issues show`, `resolve`, `dismiss` and `reopen` take. Triage one
+    domain at a time with `--domain`, which covers its nested domains too.
+    Exits 0 on success, 2 on usage errors, 3 on transport/API errors.
     """
     status = _validate_choice(status, STATUSES, "--status")
     impact = _validate_choice(impact, IMPACTS, "--impact")
@@ -144,6 +149,7 @@ def list_issues(
             status=status,
             impact=impact,
             cause=cause,
+            domain=domain,
         )
     except (AuthError, ApiError) as exc:
         raise api_failure(exc) from exc
@@ -153,14 +159,16 @@ def list_issues(
         raise typer.Exit(EXIT_OK)
 
     if not issues:
-        typer.echo("No issues match." if (status or impact or cause) else "No issues on this project.")
+        typer.echo("No issues match." if (status or impact or cause or domain) else "No issues on this project.")
         raise typer.Exit(EXIT_OK)
 
     for issue in issues:
         occurrences = issue.get("occurrence_count_cache") or 0
+        # Primary domain only; --json carries the whole list.
+        domains = issue.get("domains") or []
         typer.echo(
             f"{issue.get('id')}  {issue.get('impact')}  x{occurrences}  "
-            f"{issue.get('status')}  {one_line(issue.get('title'))}"
+            f"{issue.get('status')}  {domains[0] if domains else '-'}  {one_line(issue.get('title'))}"
         )
     raise typer.Exit(EXIT_OK)
 
@@ -201,6 +209,7 @@ def show(
         f"{issue.get('status')}  {issue.get('impact')}  {issue.get('cause')}  "
         f"{issue.get('occurrence_count_cache', len(occurrences))} occurrence(s)"
     )
+    _field("Domains", ", ".join(issue.get("domains") or []) or None)
     _field("Description", issue.get("description"), blank_line=True)
     _field("Suggested action", issue.get("suggested_action"), blank_line=True)
     typer.echo("")
