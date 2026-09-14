@@ -3,7 +3,21 @@
 Versions match the releases on [PyPI](https://pypi.org/project/cassis-cli/); dates are the
 PyPI upload date.
 
-## Unreleased
+## 2.3.0 (2026-09-14)
+
+### Added
+
+- `cassis issues show` prints a `PR mention:` line on open issues (`Resolves <id>`): write it in the
+  description of the pull request that fixes the issue and Cassis resolves the issue when the PR
+  merges (`Closes` / `Fixes` and the id's first 13+ characters also work). Once closed, the issue
+  shows `Resolved via:` with how it was closed (`manual`, `fix_proposal`, `fix_chat_merge`,
+  `pr_mention`) and the PR when there was one; `--json` carries the same as `resolved_via` /
+  `resolved_ref`. Needs a server with the mention support (8.8+).
+
+### Changed
+
+- `cassis issues resolve --help` now points to the PR mention for fixes that ship through a pull
+  request; the command stays for outcomes that never go through one.
 
 ## 2.2.0 (2026-09-10)
 

@@ -186,8 +186,10 @@ def show(
     """Show one issue: its diagnosis, suggested action, and occurrences.
 
     Each occurrence's id feeds `cassis issues evidence`, which prints what the
-    agent saw. Exits 0 on success, 1 when the issue does not exist in the
-    project, 2 on usage errors, 3 on transport/API errors.
+    agent saw. The `PR mention` line is what to write in the description of
+    the pull request that fixes the issue (`Resolves <id>`): Cassis resolves
+    it when that PR merges. Exits 0 on success, 1 when the issue does not
+    exist in the project, 2 on usage errors, 3 on transport/API errors.
     """
     api_key = require_api_key(api_key)
     project_id = resolve_project_id(project_id, path / Path(base_path), quiet=json_output)
@@ -210,10 +212,16 @@ def show(
         f"{issue.get('occurrence_count_cache', len(occurrences))} occurrence(s)"
     )
     _field("Domains", ", ".join(issue.get("domains") or []) or None)
+    if issue.get("resolved_via"):
+        ref = issue.get("resolved_ref")
+        _field("Resolved via", f"{issue['resolved_via']}{f' ({ref})' if ref else ''}")
     _field("Description", issue.get("description"), blank_line=True)
     _field("Suggested action", issue.get("suggested_action"), blank_line=True)
     typer.echo("")
     typer.echo("Fix proposal: available (review it in Cassis)" if issue.get("fix_proposal") else "Fix proposal: none")
+    if issue.get("status") == "open":
+        # What to put in the PR that fixes it: Cassis resolves the issue when that PR merges.
+        typer.echo(f"PR mention: Resolves {issue.get('id')}")
     if occurrences:
         typer.echo("")
         typer.echo("Occurrences:")
@@ -308,8 +316,11 @@ def resolve(
 ) -> None:
     """Mark an issue resolved — the ontology change that fixes it is published.
 
-    Exits 0 on success, 1 when the issue does not exist in the project, 2 on
-    usage errors, 3 on transport/API errors.
+    For a fix that ships through a pull request, prefer writing `Resolves <id>`
+    in the PR description: Cassis resolves the issue itself when the PR
+    merges, and records the PR on it. Use this command for outcomes that never
+    go through a PR. Exits 0 on success, 1 when the issue does not exist in
+    the project, 2 on usage errors, 3 on transport/API errors.
     """
     _set_status(
         issue_id=issue_id,

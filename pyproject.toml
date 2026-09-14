@@ -1,6 +1,6 @@
 [project]
 name = "cassis-cli"
-version = "2.2.0"
+version = "2.3.0"
 description = "Validate, test and evaluate your Cassis ontology from your terminal, then publish it"
 readme = "README.md"
 license = { text = "Apache-2.0" }
