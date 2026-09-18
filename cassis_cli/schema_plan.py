@@ -7,6 +7,7 @@ keeps stdout to the JSON record alone.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import typer
@@ -30,6 +31,39 @@ def _line(text: str, *, err: bool, mark: str | None = None, bold: bool = False) 
 def render_plan(plan: dict[str, Any], *, err: bool) -> None:
     """Print the plan: schema diff, ontology changes with their cascade, warnings, footer."""
     document = plan.get("document") or {}
+    diagnostics = document.get("diagnostics") or []
+    if diagnostics:
+        _line(f"Extraction diagnostics ({len(diagnostics)})", err=err, bold=True)
+        for diagnostic in diagnostics:
+            location = diagnostic.get("object_name") or ""
+            if diagnostic.get("line") is not None:
+                location += f" line {diagnostic['line']}"
+                if diagnostic.get("column") is not None:
+                    location += f":{diagnostic['column']}"
+            severity = diagnostic.get("severity", "info")
+            _line(
+                f"  {severity}: {diagnostic.get('code')} {location.strip()}: {diagnostic.get('message')}",
+                err=err,
+                mark="-" if severity == "error" else "~",
+            )
+    if not plan_extraction_complete(plan):
+        objects = document.get("extracted_objects") or []
+        _line(f"Extracted objects ({document.get('extracted_object_count', len(objects))})", err=err, bold=True)
+        for obj in objects[:50]:
+            _line(
+                f"  {obj.get('schema_name')}.{obj.get('name')}  {obj.get('table_type')}"
+                f"  ({obj.get('column_count')} columns)",
+                err=err,
+            )
+        if len(objects) > 50 or document.get("extracted_objects_truncated"):
+            _line("  … list capped; use --json or --out for the full returned inventory", err=err)
+        _line(
+            "Schema extraction is incomplete. Resolve the errors and plan again; nothing can be applied.",
+            err=err,
+            mark="-",
+            bold=True,
+        )
+        return
     diff = document.get("schema_diff") or {}
     tables = diff.get("tables") or []
     _line(f"Schema diff ({len(tables)} table{'s' if len(tables) != 1 else ''})", err=err, bold=True)
@@ -44,6 +78,11 @@ def render_plan(plan: dict[str, Any], *, err: bool) -> None:
         if t.get("in_ontology"):
             suffix += "  (in ontology)"
         _line(f"  {mark} {name}{suffix}", err=err, mark=mark)
+        for metadata in t.get("metadata_changes") or []:
+            _line(f"      ~ {metadata.get('field')}", err=err, mark="~")
+            for label, value in (("from", metadata.get("old_value")), ("to", metadata.get("new_value"))):
+                formatted = value if isinstance(value, str) else json.dumps(value, indent=2, ensure_ascii=False)
+                _line(f"        {label}: " + formatted.replace("\n", "\n              "), err=err)
         for c in t.get("columns") or []:
             cmark = _MARK.get(c.get("kind", ""), "~")
             if c.get("kind") == "renamed":
@@ -127,4 +166,13 @@ def plan_counts(plan: dict[str, Any]) -> tuple[int, int, int, int]:
 def plan_is_empty(plan: dict[str, Any]) -> bool:
     document = plan.get("document") or {}
     diff = document.get("schema_diff") or {}
-    return not (diff.get("tables") or document.get("ontology_changes") or document.get("warnings"))
+    return plan_extraction_complete(plan) and not (
+        diff.get("tables") or document.get("ontology_changes") or document.get("warnings")
+    )
+
+
+def plan_extraction_complete(plan: dict[str, Any]) -> bool:
+    document = plan.get("document") or {}
+    return document.get("extraction_complete") is not False and not any(
+        d.get("severity") == "error" for d in document.get("diagnostics") or []
+    )

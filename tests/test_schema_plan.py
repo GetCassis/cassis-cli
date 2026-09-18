@@ -70,6 +70,21 @@ _EMPTY_DOC = {
     "warnings": [],
     "summary": {},
 }
+_INCOMPLETE_DOC = {
+    **_EMPTY_DOC,
+    "extraction_complete": False,
+    "diagnostics": [
+        {
+            "code": "view_columns_unresolved",
+            "severity": "error",
+            "message": "Missing dependency",
+            "object_name": "public.v",
+            "line": 2,
+        }
+    ],
+    "extracted_objects": [{"schema_name": "public", "name": "kept", "table_type": "TABLE", "column_count": 1}],
+    "extracted_object_count": 1,
+}
 
 
 @pytest.fixture
@@ -218,7 +233,57 @@ def _args(*more):
     return ["--api-key", "sk-k6-test", *more]
 
 
+@pytest.mark.parametrize("command", ["apply", "push"])
+def test_incomplete_plan_blocks_local_and_remote_writes(command, repo, ddl_file, monkeypatch):
+    seen = []
+    route(monkeypatch, make_router(document=_INCOMPLETE_DOC, seen=seen))
+    _write_tree(repo, _REMOTE)
+    extra = ["--yes"] if command == "push" else []
+    result = runner.invoke(app, ["schema", command, str(ddl_file), "--path", str(repo), *extra, *_args()])
+    assert result.exit_code == 1, result.output
+    assert "Missing dependency" in result.output
+    assert not any(p.endswith(("/apply", "/ontology/import", "/checkout")) for _, p, _ in seen)
+    assert (repo / "cassis" / "tables" / "public" / "orders.yml").read_text() == _REMOTE["tables/public/orders.yml"]
+    assert not (repo / "cassis" / ".schema-apply.json").exists()
+
+
 class TestSchemaPlan:
+    def test_incomplete_plan_has_actionable_diagnostics_and_nonzero_exit(self, repo, ddl_file, monkeypatch):
+        route(monkeypatch, make_router(document=_INCOMPLETE_DOC))
+        result = runner.invoke(app, ["schema", "plan", str(ddl_file), "--path", str(repo), *_args("--json")])
+        assert result.exit_code == 1, result.output
+        assert json.loads(result.stdout)["document"]["extraction_complete"] is False
+        assert "public.v line 2: Missing dependency" in result.stderr
+        assert "public.kept" in result.stderr
+        assert "Plan ready" not in result.stderr
+
+    def test_definition_only_change_is_rendered(self, repo, ddl_file, monkeypatch):
+        document = {
+            **_EMPTY_DOC,
+            "schema_diff": {
+                "tables": [
+                    {
+                        "schema_name": "public",
+                        "table_name": "v",
+                        "kind": "modified",
+                        "columns": [],
+                        "metadata_changes": [
+                            {
+                                "field": "definition",
+                                "old_value": "SELECT id FROM t",
+                                "new_value": "SELECT id FROM t WHERE active",
+                            }
+                        ],
+                    }
+                ]
+            },
+        }
+        route(monkeypatch, make_router(document=document))
+        result = runner.invoke(app, ["schema", "plan", str(ddl_file), "--path", str(repo), *_args()])
+        assert result.exit_code == 0, result.output
+        assert "definition" in result.output
+        assert "SELECT id FROM t WHERE active" in result.output
+
     def test_plan_renders_and_exits_zero(self, repo, ddl_file, monkeypatch):
         route(monkeypatch, make_router())
         result = runner.invoke(app, ["schema", "plan", str(ddl_file), "--path", str(repo), *_args()])
@@ -275,6 +340,17 @@ class TestSchemaPlan:
 
 
 class TestSchemaPlanDryRun:
+    def test_incomplete_preview_never_writes_checkout(self, repo, ddl_file, monkeypatch):
+        route(monkeypatch, make_router(document=_INCOMPLETE_DOC))
+        result = runner.invoke(
+            app,
+            ["schema", "plan", str(ddl_file), "--dry-run", "--write-checkout", "--path", str(repo), *_args("--json")],
+        )
+        assert result.exit_code == 1, result.output
+        assert json.loads(result.stdout)["document"]["extraction_complete"] is False
+        assert not (repo / "cassis" / "tables").exists()
+        assert "Plan computed" not in result.stderr
+
     def test_dry_run_posts_the_preview_and_polls_nothing(self, repo, ddl_file, monkeypatch):
         seen = []
         route(monkeypatch, make_router(seen=seen))

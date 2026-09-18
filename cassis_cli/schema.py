@@ -49,7 +49,7 @@ from cassis_cli.common import (
     resolve_project_id,
     sync_ontology_tree,
 )
-from cassis_cli.schema_plan import plan_counts, plan_is_empty, render_plan
+from cassis_cli.schema_plan import plan_counts, plan_extraction_complete, plan_is_empty, render_plan
 
 app = typer.Typer(help="Pull the data source's schema; plan, apply (locally) and push a schema update from DDL.")
 
@@ -219,7 +219,7 @@ def _require_one_source(
 @app.command()
 def plan(
     ddl_file: Optional[Path] = typer.Argument(
-        None, help="Path to the DDL file (.sql, .ddl, .txt) containing CREATE TABLE statements. Or --warehouse."
+        None, help="Path to the DDL file (.sql, .ddl, .txt) describing tables and views. Or --warehouse."
     ),
     warehouse: bool = _WAREHOUSE_OPTION,
     path: Path = _PATH_OPTION,
@@ -258,7 +258,7 @@ def plan(
 
     --dry-run is the prepare-ahead gesture: the plan is computed synchronously
     and nothing is kept server-side, so it works for a schema change that is
-    still a PR (a dbt model, a migration) and leaves the project's current plan
+    still a PR (the desired schema snapshot) and leaves the project's current plan
     alone. --write-checkout then writes the resulting ontology files into the
     checkout, to commit next to the schema change; nothing is pushed.
     """
@@ -282,6 +282,10 @@ def plan(
             json_output=json_output,
             out=out,
         )
+        if not plan_extraction_complete(preview):
+            if json_output:
+                typer.echo(json.dumps(preview, indent=2))
+            raise typer.Exit(EXIT_VALIDATION_FAILED)
         if write_checkout:
             ontology_dir = path / base_path.strip().strip("/")
             written, deleted, _kept = _write_checkout(ontology_dir, preview["files"], json_output=json_output)
@@ -309,7 +313,7 @@ def plan(
     )
     if json_output:
         typer.echo(json.dumps(record, indent=2))
-    if record.get("status") != "ready":
+    if record.get("status") != "ready" or not plan_extraction_complete(record):
         raise typer.Exit(EXIT_VALIDATION_FAILED)
     raise typer.Exit(EXIT_OK)
 
@@ -366,7 +370,7 @@ def apply(
         timeout=timeout,
         json_output=json_output,
     )
-    if record.get("status") != "ready":
+    if record.get("status") != "ready" or not plan_extraction_complete(record):
         raise typer.Exit(EXIT_VALIDATION_FAILED)
     try:
         checkout = get_schema_plan_checkout(
@@ -454,7 +458,7 @@ def push(
         timeout=timeout,
         json_output=json_output,
     )
-    if record.get("status") != "ready":
+    if record.get("status") != "ready" or not plan_extraction_complete(record):
         raise typer.Exit(EXIT_VALIDATION_FAILED)
     _require_marker_matches(path / Path(base_path), record)
     if not yes:
@@ -764,7 +768,9 @@ def _plan(
             raise typer.Exit(EXIT_USAGE) from exc
     if record.get("status") == "ready":
         render_plan(record, err=json_output)
-        if plan_is_empty(record):
+        if not plan_extraction_complete(record):
+            pass  # The renderer already explains the blocking diagnostics.
+        elif plan_is_empty(record):
             typer.secho("✓ Schema is up to date.", fg=typer.colors.GREEN, err=json_output)
         else:
             typer.secho(f"✓ Plan ready: {plan_id}", fg=typer.colors.GREEN, err=json_output)
@@ -814,6 +820,8 @@ def _preview(
     render_plan(record, err=json_output)
     for warning in preview.get("warnings") or []:
         typer.secho(f"  warning: {warning}", fg=typer.colors.YELLOW, err=True)
+    if not plan_extraction_complete(record):
+        return preview
     if plan_is_empty(record):
         typer.secho("✓ Schema is up to date (dry run, nothing kept).", fg=typer.colors.GREEN, err=json_output)
     else:

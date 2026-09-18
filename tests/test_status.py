@@ -222,6 +222,18 @@ class TestStatusSchemaPlanSummary:
         assert result.exit_code == 0, result.output
         assert "Schema plan: ready (cassis schema apply --plan" in result.output
 
+    def test_ready_plan_with_incomplete_extraction_does_not_suggest_apply(self, repo, monkeypatch):
+        plan = {
+            "id": "019f0000-0000-7000-8000-00000000d001",
+            "status": "ready",
+            "ontology_changes": 0,
+            "extraction_complete": False,
+        }
+        result = self._status(repo, monkeypatch, dict(_STATUS_BODY, schema_plan=plan))
+        assert result.exit_code == 0, result.output
+        assert "blocked by incomplete extraction" in result.output
+        assert "schema apply" not in result.output
+
     def test_in_flight_plan_prints_its_status(self, repo, monkeypatch):
         plan = {"id": "019f0000-0000-7000-8000-00000000d001", "status": "planning"}
         result = self._status(repo, monkeypatch, dict(_STATUS_BODY, schema_plan=plan))

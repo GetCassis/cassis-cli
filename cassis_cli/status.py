@@ -88,7 +88,13 @@ def _render(status_record: "dict[str, Any]", comparison_text: str) -> None:
     else:
         typer.echo("Git sync: not configured")
     schema_plan = status_record.get("schema_plan")
-    if isinstance(schema_plan, dict) and schema_plan.get("status") == "ready":
+    if (
+        isinstance(schema_plan, dict)
+        and schema_plan.get("status") == "ready"
+        and schema_plan.get("extraction_complete", True) is False
+    ):
+        typer.echo("Schema plan: blocked by incomplete extraction (create a new plan after resolving the errors)")
+    elif isinstance(schema_plan, dict) and schema_plan.get("status") == "ready":
         changes = schema_plan.get("ontology_changes")
         changes_text = f", {changes} ontology change(s)" if changes is not None else ""
         typer.echo(f"Schema plan: ready{changes_text} (cassis schema apply --plan {schema_plan.get('id')})")

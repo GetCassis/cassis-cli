@@ -3,6 +3,25 @@
 Versions match the releases on [PyPI](https://pypi.org/project/cassis-cli/); dates are the
 PyPI upload date.
 
+## 2.4.0 (unreleased)
+
+### Added
+
+- Schema plans show structured extraction diagnostics, including object names and statement locations, plus an inventory of extracted objects when an upload is incomplete. Metadata changes, including view SQL definitions and constraints, show their before/after values.
+
+### Changed
+
+- Issues list defaults to open issues. Use `--status all` to include resolved and dismissed issues.
+- Dismiss requires `--reason invalid|irrelevant|duplicate|declined`, with optional `--detail`.
+- Resolve requires confirmation that the fix is published: pass `--published`, or confirm in an interactive terminal.
+- Show includes the status history, dismissal reason, and fixes awaiting publication.
+- These lifecycle options need a server with the issue-lifecycle support (8.9+); an older one answers with the upgrade hint.
+- Bundled ontology guide at doctrine v8: a change that fixes Cassis issues now carries `Resolves <id>` in the
+  pull request description, and resolving by hand is reserved for outcomes that never go through one. Run
+  `cassis ontology fmt` to refresh `cassis/AGENTS.md` in a checkout (an older CLI leaves the newer file alone).
+- Incomplete extraction exits 1 from `schema plan` and `--dry-run`. `schema apply`, `schema push`, and `--write-checkout` refuse the incomplete result before changing local files or the app. `--json` retains the diagnostic data. Requires the corresponding server support; older server responses remain supported.
+- `cassis status` identifies a ready schema plan that is blocked by incomplete extraction instead of suggesting `schema apply`.
+
 ## 2.3.0 (2026-09-14)
 
 ### Added

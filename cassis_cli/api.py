@@ -915,13 +915,20 @@ def post_issue_status(
     project_id: str,
     issue_id: str,
     status: str,
+    reason: Optional[str] = None,
+    detail: Optional[str] = None,
+    confirm_published: bool = False,
     transport: Optional[httpx.BaseTransport] = None,
 ) -> dict[str, Any]:
     """POST /api/ci/projects/{project_id}/issues/{issue_id}/status and return the updated issue."""
     url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/issues/{issue_id}/status"
     try:
         with _client(transport=transport) as client:
-            response = client.post(url, json={"status": status}, headers={"Authorization": f"Bearer {api_key}"})
+            response = client.post(
+                url,
+                json={"status": status, "reason": reason, "detail": detail, "confirm_published": confirm_published},
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
 

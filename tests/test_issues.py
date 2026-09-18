@@ -127,7 +127,7 @@ class TestIssuesList:
         result = runner.invoke(app, _args("issues", "list"))
 
         assert result.exit_code == 0, result.output
-        assert "No issues on this project." in result.output
+        assert "No issues match." in result.output
 
     def test_bad_status_value_exits_two(self):
         result = runner.invoke(app, _args("issues", "list", "--status", "closed"))
@@ -245,12 +245,25 @@ class TestIssuesStatusVerbs:
 
         _mock(monkeypatch, "post_issue_status", post_issue_status, handler)
 
-        result = runner.invoke(app, _args("issues", verb, ISSUE_ID))
+        result = runner.invoke(
+            app,
+            _args(
+                "issues",
+                verb,
+                ISSUE_ID,
+                *({"resolve": ["--published"], "dismiss": ["--reason", "invalid"]}.get(verb, [])),
+            ),
+        )
 
         assert result.exit_code == 0, result.output
         assert seen["method"] == "POST"
         assert seen["url"].endswith(f"/api/ci/projects/{PROJECT_ID}/issues/{ISSUE_ID}/status")
-        assert seen["body"] == {"status": expected_status}
+        assert seen["body"] == {
+            "status": expected_status,
+            "reason": "invalid" if verb == "dismiss" else None,
+            "detail": None,
+            "confirm_published": verb == "resolve",
+        }
         assert f"Issue {ISSUE_ID} is now {expected_status}." in result.output
 
     def test_resolve(self, monkeypatch):
@@ -270,7 +283,7 @@ class TestIssuesStatusVerbs:
             lambda request: httpx.Response(404, json={"detail": "Issue not found"}),
         )
 
-        result = runner.invoke(app, _args("issues", "resolve", ISSUE_ID))
+        result = runner.invoke(app, _args("issues", "resolve", ISSUE_ID, "--published"))
 
         assert result.exit_code == 1
         assert f"No issue {ISSUE_ID} in this project" in result.output
@@ -467,3 +480,67 @@ class TestIssueAnalysisRunNotFound:
             post_issue_analysis_cancel(
                 api_url="http://api", api_key="k", project_id=PROJECT_ID, run_id=RUN_ID, transport=transport
             )
+
+
+@pytest.mark.parametrize("args", [("resolve",), ("dismiss",), ("dismiss", "--reason", "unknown")])
+def test_status_requires_publication_or_reason(args):
+    result = runner.invoke(app, _args("issues", args[0], ISSUE_ID, *args[1:]))
+    assert result.exit_code == 2
+
+
+def test_default_queue_and_explicit_all(monkeypatch):
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.params.get("status"))
+        return httpx.Response(200, json=[])
+
+    _mock(monkeypatch, "get_issues", get_issues, handler)
+    assert runner.invoke(app, _args("issues", "list")).exit_code == 0
+    assert runner.invoke(app, _args("issues", "list", "--status", "all")).exit_code == 0
+    assert seen == ["open", "all"]
+
+
+def test_show_prints_history_and_dismissal(monkeypatch):
+    issue = dict(
+        _ISSUE,
+        dismiss_reason="declined",
+        dismiss_detail="Later",
+        status_history=[
+            {
+                "created_at": "2026-09-14T10:00:00Z",
+                "from_status": "open",
+                "to_status": "dismissed",
+                "via": "manual",
+                "actor_kind": "user",
+                "reason": "declined",
+                "detail": "Later",
+            }
+        ],
+    )
+    _mock(monkeypatch, "get_issue", get_issue, lambda request: httpx.Response(200, json=issue))
+    result = runner.invoke(app, _args("issues", "show", ISSUE_ID))
+    assert result.exit_code == 0
+    assert "open -> dismissed" in result.output
+    assert "Dismiss reason: declined" in result.output
+
+
+@pytest.mark.parametrize("answer,expected_code", [("y\n", 0), ("n\n", 2)])
+def test_resolve_interactive_publication_confirmation(monkeypatch, answer, expected_code):
+    from types import SimpleNamespace
+
+    from cassis_cli import issues
+
+    monkeypatch.setattr(issues, "sys", SimpleNamespace(stdin=SimpleNamespace(isatty=lambda: True)))
+    seen = []
+
+    def handler(request):
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json=dict(_ISSUE, status="resolved"))
+
+    _mock(monkeypatch, "post_issue_status", post_issue_status, handler)
+    result = runner.invoke(app, _args("issues", "resolve", ISSUE_ID), input=answer)
+    assert result.exit_code == expected_code
+    assert bool(seen) == (expected_code == 0)
+    if seen:
+        assert seen[0]["confirm_published"] is True

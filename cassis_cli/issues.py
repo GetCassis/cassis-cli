@@ -10,6 +10,7 @@ conversations that arrived since the last pass, without waiting for the nightly 
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
@@ -45,7 +46,8 @@ from cassis_cli.common import (
 
 app = typer.Typer(no_args_is_help=True, help="Triage the project's issues.")
 
-STATUSES = ("open", "resolved", "dismissed")
+STATUSES = ("open", "resolved", "dismissed", "all")
+DISMISS_REASONS = ("invalid", "irrelevant", "duplicate", "declined")
 IMPACTS = ("wrong_answer", "unreliable_answer", "no_answer", "inefficient")
 CAUSES = ("ontology_gap", "missing_data")
 
@@ -114,7 +116,7 @@ def _field(label: str, value: Any, *, blank_line: bool = False) -> None:
 
 @app.command(name="list")
 def list_issues(
-    status: Optional[str] = typer.Option(None, "--status", help=f"Filter by status ({', '.join(STATUSES)})."),
+    status: Optional[str] = typer.Option("open", "--status", help=f"Filter by status ({', '.join(STATUSES)})."),
     impact: Optional[str] = typer.Option(None, "--impact", help=f"Filter by impact ({', '.join(IMPACTS)})."),
     cause: Optional[str] = typer.Option(None, "--cause", help=f"Filter by cause ({', '.join(CAUSES)})."),
     domain: Optional[str] = typer.Option(
@@ -212,9 +214,23 @@ def show(
         f"{issue.get('occurrence_count_cache', len(occurrences))} occurrence(s)"
     )
     _field("Domains", ", ".join(issue.get("domains") or []) or None)
-    if issue.get("resolved_via"):
+    if issue.get("resolved_via") and issue.get("status") != "open":
         ref = issue.get("resolved_ref")
         _field("Resolved via", f"{issue['resolved_via']}{f' ({ref})' if ref else ''}")
+    _field("Dismiss reason", issue.get("dismiss_reason"))
+    _field("Dismiss detail", issue.get("dismiss_detail"))
+    if issue.get("fix_applied_at"):
+        _field("Fix", "Applied; awaiting publication")
+    for event in issue.get("status_history") or []:
+        _field(
+            "History",
+            f"{event.get('created_at')}  {event.get('from_status')} -> {event.get('to_status')}  "
+            f"{event.get('via')}  {event.get('actor_kind')}"
+            + (f"  {event['reason']}" if event.get("reason") else "")
+            + (f"  {event['detail']}" if event.get("detail") else "")
+            + (f"  {event['ref']}" if event.get("ref") else ""),
+        )
+
     _field("Description", issue.get("description"), blank_line=True)
     _field("Suggested action", issue.get("suggested_action"), blank_line=True)
     typer.echo("")
@@ -283,6 +299,9 @@ def _set_status(
     api_key: Optional[str],
     api_url: str,
     base_path: str,
+    reason: Optional[str] = None,
+    detail: Optional[str] = None,
+    confirm_published: bool = False,
 ) -> None:
     """Post a new status for the issue and confirm it on one line."""
     api_key = require_api_key(api_key)
@@ -295,6 +314,9 @@ def _set_status(
             project_id=project_id,
             issue_id=issue_id,
             status=status,
+            reason=reason,
+            detail=detail,
+            confirm_published=confirm_published,
         )
     except IssueNotFoundError as exc:
         raise _not_found_failure(exc) from exc
@@ -307,6 +329,11 @@ def _set_status(
 
 @app.command()
 def resolve(
+    published: bool = typer.Option(
+        False,
+        "--published",
+        help="Confirm the fix is in the published ontology; required without an interactive terminal.",
+    ),
     issue_id: str = typer.Argument(..., help="Id of the issue to resolve (from `cassis issues list`)."),
     path: Path = _PATH_OPTION,
     project_id: Optional[str] = _PROJECT_OPTION,
@@ -322,9 +349,18 @@ def resolve(
     go through a PR. Exits 0 on success, 1 when the issue does not exist in
     the project, 2 on usage errors, 3 on transport/API errors.
     """
+    if not published:
+        if not sys.stdin.isatty():
+            typer.secho(
+                "Use --published to confirm the fix is in the published ontology.", fg=typer.colors.RED, err=True
+            )
+            raise typer.Exit(EXIT_USAGE)
+        if not typer.confirm("Is the fix already in the published ontology?"):
+            raise typer.Exit(EXIT_USAGE)
     _set_status(
         issue_id=issue_id,
         status="resolved",
+        confirm_published=True,
         path=path,
         project_id=project_id,
         api_key=api_key,
@@ -335,6 +371,8 @@ def resolve(
 
 @app.command()
 def dismiss(
+    reason: str = typer.Option(..., "--reason", help=f"Why this issue is dismissed: {', '.join(DISMISS_REASONS)}."),
+    detail: Optional[str] = typer.Option(None, "--detail", help="Additional context for the dismissal."),
     issue_id: str = typer.Argument(..., help="Id of the issue to dismiss (from `cassis issues list`)."),
     path: Path = _PATH_OPTION,
     project_id: Optional[str] = _PROJECT_OPTION,
@@ -347,9 +385,12 @@ def dismiss(
     Exits 0 on success, 1 when the issue does not exist in the project, 2 on
     usage errors, 3 on transport/API errors.
     """
+    _validate_choice(reason, DISMISS_REASONS, "--reason")
     _set_status(
         issue_id=issue_id,
         status="dismissed",
+        reason=reason,
+        detail=detail,
         path=path,
         project_id=project_id,
         api_key=api_key,
