@@ -29,6 +29,7 @@ from cassis_cli.common import (
 from cassis_cli.common import collect_tree as _collect_tree
 from cassis_cli.common import is_legacy_domain_file as _is_legacy_domain_file
 from cassis_cli.common import require_api_key as _require_api_key
+from cassis_cli.common import require_committed_tree as _require_committed_tree
 from cassis_cli.common import resolve_project_id as _resolve_project_id
 from cassis_cli.common import sync_ontology_tree as _sync_ontology_tree
 from cassis_cli.guide import DOCTRINE_VERSION, GUIDE_FILENAME, guide_status, refresh_guide
@@ -332,11 +333,14 @@ def upload(
 
     Replaces the project's unpublished ontology with the local tree (full
     replace) and, unless --no-publish is passed, publishes it immediately as a
-    new version. Exits 0 on success, 1 when the tree fails validation, 2 on
-    usage errors, 3 on transport/API errors.
+    new version. The checkout must be a git repository whose ontology files
+    match HEAD: the published version records that commit. Exits 0 on success,
+    1 when the tree fails validation, 2 on usage errors (including uncommitted
+    changes under the base path), 3 on transport/API errors.
     """
     api_key = _require_api_key(api_key)
     files, base_path = _collect_tree(path, base_path)
+    head = _require_committed_tree(path, base_path, files)
     project_id = _resolve_project_id(project_id, path / Path(base_path))
 
     try:
@@ -346,6 +350,7 @@ def upload(
             project_id=project_id,
             files=files,
             publish=publish,
+            git_commit_sha=head,
             label=label,
         )
     except AuthError as exc:

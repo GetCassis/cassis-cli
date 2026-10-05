@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import subprocess
@@ -104,6 +105,133 @@ def git_file_states(directory: Path) -> Optional[tuple[set[str], set[str]]]:
     tracked = {p for p in tracked_proc.stdout.split("\0") if p}
     dirty = {p for p in dirty_proc.stdout.split("\0") if p}
     return tracked, dirty
+
+
+def require_committed_tree(path: Path, base_path: str, files: "dict[str, str]") -> str:
+    """Return the ``HEAD`` commit that holds exactly the ontology ``files`` about to be uploaded.
+
+    An upload records this commit on the version it publishes, so the uploaded
+    files must be the ontology files of ``base_path`` at ``HEAD``: the same paths
+    with the same text, up to line endings (``collect_files`` reads CRLF as LF,
+    and line endings carry no ontology meaning). ``files`` is what ``collect_tree`` read, keyed by path
+    relative to the base path. Exits 2 (usage) when ``path`` is not a git checkout
+    with a commit, or when the two differ: a file modified, staged, renamed,
+    deleted, untracked, gitignored, missing from a sparse checkout or inside a
+    submodule. Files the upload does not send never block.
+    """
+    ontology_dir = path / Path(base_path)
+    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
+
+    def fail(reason: str) -> "typer.Exit":
+        typer.secho(
+            f"{reason} Upload the ontology from a git checkout of the repository that holds it: "
+            "Cassis records the commit each published version comes from.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        return typer.Exit(EXIT_USAGE)
+
+    def git(*args: str) -> str:
+        try:
+            proc = subprocess.run(
+                ["git", *args],
+                cwd=ontology_dir,
+                env=env,
+                capture_output=True,
+                text=True,
+                errors="replace",
+            )
+        except OSError as exc:
+            raise fail(f"Could not run git ({exc}).") from exc
+        if proc.returncode != 0:
+            detail = proc.stderr.strip().splitlines()
+            raise fail(f"{path} is not a git checkout with a commit" + (f" (git: {detail[0]})." if detail else "."))
+        return proc.stdout
+
+    head = git("rev-parse", "--verify", "HEAD").strip()
+    # Run from ontology_dir, ls-tree lists paths relative to it. A submodule is a
+    # "commit" entry, so the files inside it count as not committed.
+    committed: "dict[str, str]" = {}
+    for entry in git("ls-tree", "-r", "-z", "HEAD", ".").split("\0"):
+        if not entry:
+            continue
+        meta, rel = entry.split("\t", 1)
+        _mode, kind, blob = meta.split()
+        if kind == "blob" and is_ontology_file(rel):
+            committed[rel] = blob
+    # Compare the content about to be uploaded, not the files on disk: a clean
+    # filter can make a working-tree file hash to its committed blob while the
+    # text read from it differs. Its blob id is computed here; a blob that does
+    # not match is accepted when it holds the same text up to line endings,
+    # which `collect_files` already reads as LF (a CRLF commit uploads as LF).
+    differing_blobs = {
+        p: committed[p] for p in files if p in committed and _blob_id(files[p], committed[p]) != committed[p]
+    }
+    committed_text = _read_blobs(ontology_dir, env, set(differing_blobs.values()), fail)
+    differing = sorted(
+        {p for p in files if p not in committed}
+        | {p for p, blob in differing_blobs.items() if _lf(committed_text.get(blob)) != _lf(files[p])}
+        | (committed.keys() - files.keys())
+    )
+    if differing:
+        shown = "\n".join(f"  {base_path}/{p}" for p in differing[:20])
+        more = f"\n  … and {len(differing) - 20} more" if len(differing) > 20 else ""
+        typer.secho(
+            f"Uncommitted changes under {base_path}/ (these files differ from HEAD):\n{shown}{more}\n"
+            f"Commit the changes under {base_path}/, then upload again.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(EXIT_USAGE)
+    return head
+
+
+def _blob_id(content: str, like: str) -> str:
+    """The git blob id of ``content``, in the hash ``like`` (a blob id of the repository) uses."""
+    data = content.encode("utf-8")
+    digest = hashlib.sha256() if len(like) == 64 else hashlib.sha1()
+    digest.update(b"blob %d\0" % len(data) + data)
+    return digest.hexdigest()
+
+
+def _read_blobs(
+    cwd: Path, env: "dict[str, str]", blobs: "set[str]", fail: "Callable[[str], typer.Exit]"
+) -> "dict[str, str]":
+    """Read committed blobs in one ``git cat-file --batch``, keyed by blob id; non-UTF-8 blobs are left out."""
+    if not blobs:
+        return {}
+    try:
+        proc = subprocess.run(
+            ["git", "cat-file", "--batch"],
+            cwd=cwd,
+            env=env,
+            input="".join(f"{blob}\n" for blob in sorted(blobs)).encode(),
+            capture_output=True,
+        )
+    except OSError as exc:
+        raise fail(f"Could not run git ({exc}).") from exc
+    if proc.returncode != 0:
+        raise fail(f"Could not read committed files (git: {proc.stderr.decode(errors='replace').strip()}).")
+    texts: "dict[str, str]" = {}
+    out, pos = proc.stdout, 0
+    while pos < len(out):
+        header_end = out.index(b"\n", pos)
+        fields = out[pos:header_end].split()
+        pos = header_end + 1
+        if len(fields) != 3:  # "<id> missing"
+            continue
+        size = int(fields[2])
+        try:
+            texts[fields[0].decode()] = out[pos : pos + size].decode("utf-8")
+        except UnicodeDecodeError:
+            pass
+        pos += size + 1  # the content is followed by a newline
+    return texts
+
+
+def _lf(text: Optional[str]) -> Optional[str]:
+    """``text`` with CRLF and CR line endings read as LF, as ``Path.read_text`` reads them."""
+    return None if text is None else text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def sync_ontology_tree(

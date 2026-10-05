@@ -1,4 +1,5 @@
 import json
+import subprocess
 
 import httpx
 import pytest
@@ -12,12 +13,13 @@ PROJECT_ID = "019f0000-0000-7000-8000-000000000000"
 
 
 @pytest.fixture
-def repo(tmp_path):
-    """A fake repository checkout with an ontology tree under the default base path."""
+def repo(tmp_path, commit_all):
+    """A git checkout with a committed ontology tree under the default base path."""
     ontology_dir = tmp_path / "cassis"
     (ontology_dir / "tables" / "public").mkdir(parents=True)
     (ontology_dir / "_project.yml").write_text("display_name: Test\n")
     (ontology_dir / "tables" / "public" / "orders.yml").write_text("schema_name: public\ntable_name: orders\n")
+    commit_all(tmp_path)
     return tmp_path
 
 
@@ -170,6 +172,162 @@ class TestOntologyUploadCommand:
         assert "No cassis/" in result.output
 
 
+class TestUploadRequiresCommittedTree:
+    """The upload sends HEAD and refuses ontology files that differ from it."""
+
+    @staticmethod
+    def _invoke(repo):
+        return runner.invoke(app, ["ontology", "upload", str(repo), "--project", PROJECT_ID, "--api-key", "sk-k6-test"])
+
+    @staticmethod
+    def _no_network(monkeypatch):
+        def handler(request):
+            raise AssertionError("no request expected")
+
+        _mock_api(monkeypatch, handler)
+
+    def test_sends_head(self, repo, commit_all, monkeypatch):
+        head = commit_all(repo)
+        seen = {}
+
+        def handler(request):
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json=_success_body(1))
+
+        _mock_api(monkeypatch, handler)
+
+        result = self._invoke(repo)
+
+        assert result.exit_code == 0, result.output
+        assert seen["body"]["git_commit_sha"] == head
+
+    def test_outside_a_git_checkout_exits_two(self, tmp_path, monkeypatch):
+        (tmp_path / "cassis" / "tables").mkdir(parents=True)
+        (tmp_path / "cassis" / "tables" / "orders.yml").write_text("schema_name: public\ntable_name: orders\n")
+        self._no_network(monkeypatch)
+
+        result = self._invoke(tmp_path)
+
+        assert result.exit_code == 2
+        assert "not a git checkout" in result.output
+
+    @pytest.mark.parametrize("change", ["modified", "staged", "deleted", "untracked"])
+    def test_uncommitted_ontology_file_exits_two(self, repo, monkeypatch, change):
+        orders = repo / "cassis" / "tables" / "public" / "orders.yml"
+        if change == "modified":
+            orders.write_text("schema_name: public\ntable_name: orders\ndescription: edited\n")
+        elif change == "staged":
+            orders.write_text("schema_name: public\ntable_name: orders\ndescription: edited\n")
+            subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        elif change == "deleted":
+            orders.unlink()
+            (repo / "cassis" / "tables" / "public" / "items.yml").write_text("schema_name: public\ntable_name: x\n")
+            subprocess.run(["git", "add", "cassis/tables/public/items.yml"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-q", "-m", "items"], cwd=repo, check=True)
+        else:
+            (repo / "cassis" / "tables" / "public" / "items.yml").write_text("schema_name: public\ntable_name: x\n")
+        self._no_network(monkeypatch)
+
+        result = self._invoke(repo)
+
+        assert result.exit_code == 2, result.output
+        assert "Uncommitted changes under cassis/" in result.output
+        assert "Commit the changes under cassis/, then upload again." in result.output
+
+    def test_gitignored_ontology_file_exits_two(self, repo, monkeypatch):
+        """Collected and uploaded, but not in HEAD: the recorded commit would not hold it."""
+        (repo / ".gitignore").write_text("cassis/joins.yml\n")
+        subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "ignore"], cwd=repo, check=True)
+        (repo / "cassis" / "joins.yml").write_text("[]\n")
+        self._no_network(monkeypatch)
+
+        result = self._invoke(repo)
+
+        assert result.exit_code == 2, result.output
+        assert "cassis/joins.yml" in result.output
+
+    def test_staged_rename_out_of_the_ontology_exits_two(self, repo, monkeypatch):
+        """`git mv x.yml x.txt` drops x.yml from the upload while HEAD still holds it."""
+        subprocess.run(
+            ["git", "mv", "cassis/tables/public/orders.yml", "cassis/tables/public/orders.txt"], cwd=repo, check=True
+        )
+        (repo / "cassis" / "tables" / "public" / "items.yml").write_text("schema_name: public\ntable_name: x\n")
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "items"], cwd=repo, check=True)
+        subprocess.run(["git", "reset", "-q", "--soft", "HEAD~1"], cwd=repo, check=True)  # rename staged again
+        subprocess.run(["git", "commit", "-q", "-m", "only items", "--", "cassis/tables/public/items.yml"], cwd=repo)
+        self._no_network(monkeypatch)
+
+        result = self._invoke(repo)
+
+        assert result.exit_code == 2, result.output
+        assert "cassis/tables/public/orders.yml" in result.output
+
+    def test_checkout_in_a_subdirectory_of_the_repository(self, tmp_path, commit_all, monkeypatch):
+        sub = tmp_path / "analytics"
+        (sub / "cassis" / "tables").mkdir(parents=True)
+        (sub / "cassis" / "tables" / "orders.yml").write_text("schema_name: public\ntable_name: orders\n")
+        head = commit_all(tmp_path)
+        seen = {}
+
+        def handler(request):
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json=_success_body(1))
+
+        _mock_api(monkeypatch, handler)
+
+        result = self._invoke(sub)
+
+        assert result.exit_code == 0, result.output
+        assert seen["body"]["git_commit_sha"] == head
+
+    def test_uploaded_text_that_differs_from_head_exits_two_even_when_the_file_hashes_to_it(self, repo, monkeypatch):
+        """A clean filter makes the working-tree file hash to its blob; the text the upload sends is checked."""
+        subprocess.run(["git", "config", "filter.dropdesc.clean", "grep -v '^description:'"], cwd=repo, check=True)
+        (repo / ".gitattributes").write_text("*.yml filter=dropdesc\n")
+        orders = repo / "cassis" / "tables" / "public" / "orders.yml"
+        orders.write_text("schema_name: public\ntable_name: orders\ndescription: not in the commit\n")
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "filtered"], cwd=repo, check=True)
+        self._no_network(monkeypatch)
+
+        result = self._invoke(repo)
+
+        assert result.exit_code == 2, result.output
+        assert "cassis/tables/public/orders.yml" in result.output
+
+    def test_file_committed_with_crlf_line_endings_uploads(self, repo, commit_all, monkeypatch):
+        orders = repo / "cassis" / "tables" / "public" / "orders.yml"
+        orders.write_bytes(b"schema_name: public\r\ntable_name: orders\r\n")
+        head = commit_all(repo)
+        seen = {}
+
+        def handler(request):
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json=_success_body(1))
+
+        _mock_api(monkeypatch, handler)
+
+        result = self._invoke(repo)
+
+        assert result.exit_code == 0, result.output
+        assert seen["body"]["git_commit_sha"] == head
+
+    def test_files_that_are_not_uploaded_do_not_block(self, repo, monkeypatch):
+        (repo / ".gitignore").write_text("cassis/.schema.json\n")
+        subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "ignore"], cwd=repo, check=True)
+        (repo / "cassis" / ".schema.json").write_text("{}\n")  # gitignored snapshot
+        (repo / "cassis" / "NOTES.md").write_text("draft\n")  # not an ontology file
+        (repo / "README.md").write_text("outside the base path\n")
+        _mock_api(monkeypatch, lambda request: httpx.Response(200, json=_success_body(1)))
+
+        result = self._invoke(repo)
+
+        assert result.exit_code == 0, result.output
+
+
 class TestPostOntologyImport:
     def test_auth_error_on_401(self):
         transport = httpx.MockTransport(lambda request: httpx.Response(401))
@@ -179,6 +337,7 @@ class TestPostOntologyImport:
                 api_key="sk-k6-x",
                 project_id=PROJECT_ID,
                 files={"a.yml": "a: 1\n"},
+                git_commit_sha="a" * 40,
                 publish=True,
                 transport=transport,
             )
@@ -191,6 +350,7 @@ class TestPostOntologyImport:
                 api_key="sk-k6-x",
                 project_id=PROJECT_ID,
                 files={"a.yml": "a: 1\n"},
+                git_commit_sha="a" * 40,
                 publish=True,
                 transport=transport,
             )
@@ -203,6 +363,7 @@ class TestPostOntologyImport:
                 api_key="sk-k6-x",
                 project_id=PROJECT_ID,
                 files={"a.yml": "a: 1\n"},
+                git_commit_sha="a" * 40,
                 publish=False,
                 transport=transport,
             )
@@ -218,6 +379,7 @@ class TestPostOntologyImport:
                 api_key="sk-k6-x",
                 project_id=PROJECT_ID,
                 files={"a.yml": "a: 1\n"},
+                git_commit_sha="a" * 40,
                 publish=False,
                 transport=transport,
             )
@@ -237,9 +399,10 @@ class TestProjectIdDefault:
 
         return handler
 
-    def test_defaults_from_project_yml(self, repo, monkeypatch):
+    def test_defaults_from_project_yml(self, repo, commit_all, monkeypatch):
         monkeypatch.delenv("CASSIS_PROJECT_ID", raising=False)
         (repo / "cassis" / "project.yml").write_text(f"cassis_format_version: '0.1'\nproject_id: {PROJECT_ID}\n")
+        commit_all(repo)
         seen = {}
         _mock_api(monkeypatch, self._capture(seen))
 
@@ -249,9 +412,10 @@ class TestProjectIdDefault:
         assert seen["url"].endswith(f"/api/ci/projects/{PROJECT_ID}/ontology/import")
         assert "from cassis/project.yml" in result.output  # notes where the id came from
 
-    def test_explicit_project_overrides_project_yml(self, repo, monkeypatch):
+    def test_explicit_project_overrides_project_yml(self, repo, commit_all, monkeypatch):
         monkeypatch.delenv("CASSIS_PROJECT_ID", raising=False)
         (repo / "cassis" / "project.yml").write_text(f"cassis_format_version: '0.1'\nproject_id: {PROJECT_ID}\n")
+        commit_all(repo)
         seen = {}
         _mock_api(monkeypatch, self._capture(seen))
 

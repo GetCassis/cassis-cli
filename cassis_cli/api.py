@@ -204,12 +204,17 @@ def post_ontology_import(
     project_id: str,
     files: dict[str, str],
     publish: bool,
+    git_commit_sha: str,
     label: Optional[str] = None,
     transport: Optional[httpx.BaseTransport] = None,
 ) -> dict[str, Any]:
-    """POST the ontology tree to /api/ci/projects/{project_id}/ontology/import and return the response body."""
+    """POST the ontology tree to /api/ci/projects/{project_id}/ontology/import and return the response body.
+
+    ``git_commit_sha`` is the commit the files were read from, recorded on the
+    version the import publishes.
+    """
     url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/ontology/import"
-    body: dict[str, Any] = {"files": files, "publish": publish}
+    body: dict[str, Any] = {"files": files, "publish": publish, "git_commit_sha": git_commit_sha}
     if label is not None:
         body["label"] = label
     try:
@@ -1028,7 +1033,7 @@ def post_ontology_test(
     if response.status_code == 400:
         raise OntologyTestValidationError(_detail_or_text(response))
     if response.status_code == 402:
-        raise ApiError("Your organization has run out of credits. Contact your administrator to top up.")
+        raise ApiError("Your organization has run out of credits. Contact your Cassis administrator to top up.")
     if response.status_code in (403, 404):
         raise _project_scope_error(response)
     if response.status_code >= 400:

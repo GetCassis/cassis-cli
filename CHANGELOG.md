@@ -3,7 +3,14 @@
 Versions match the releases on [PyPI](https://pypi.org/project/cassis-cli/); dates are the
 PyPI upload date.
 
-## 2.4.0 (unreleased)
+## 3.0.0 (2026-10-05)
+
+### Changed
+
+- `cassis ontology upload` and `cassis schema push` run only from a git checkout whose ontology files match `HEAD`, and send that commit with the upload. They exit 2 outside a git checkout, when `git` is not installed, or when an ontology file under the base path is modified, staged, deleted or untracked; commit the changes first. Line endings do not count: a file committed with CRLF uploads. A published version then records the commit it came from, so `cassis status` shows whether the checkout is in sync; an older server ignores the commit. CI images need `git`: the GitLab recipe's `python:3.12-slim` does not have it.
+- The out-of-credits error now tells you to contact your Cassis administrator.
+
+## 2.4.0 (2026-09-18)
 
 ### Added
 

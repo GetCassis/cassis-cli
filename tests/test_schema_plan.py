@@ -88,10 +88,11 @@ _INCOMPLETE_DOC = {
 
 
 @pytest.fixture
-def repo(tmp_path):
+def repo(tmp_path, commit_all):
     ontology_dir = tmp_path / "cassis"
     ontology_dir.mkdir(parents=True)
     (ontology_dir / "project.yml").write_text(_PROJECT_YML)
+    commit_all(tmp_path)
     return tmp_path
 
 
@@ -234,11 +235,12 @@ def _args(*more):
 
 
 @pytest.mark.parametrize("command", ["apply", "push"])
-def test_incomplete_plan_blocks_local_and_remote_writes(command, repo, ddl_file, monkeypatch):
+def test_incomplete_plan_blocks_local_and_remote_writes(command, repo, commit_all, ddl_file, monkeypatch):
     seen = []
     route(monkeypatch, make_router(document=_INCOMPLETE_DOC, seen=seen))
     _write_tree(repo, _REMOTE)
     extra = ["--yes"] if command == "push" else []
+    commit_all(repo)
     result = runner.invoke(app, ["schema", command, str(ddl_file), "--path", str(repo), *extra, *_args()])
     assert result.exit_code == 1, result.output
     assert "Missing dependency" in result.output
@@ -496,11 +498,12 @@ class TestSchemaApply:
 
 
 class TestSchemaPush:
-    def test_push_applies_the_schema_then_uploads_the_local_tree(self, repo, ddl_file, monkeypatch):
+    def test_push_applies_the_schema_then_uploads_the_local_tree(self, repo, commit_all, ddl_file, monkeypatch):
         seen = []
         route(monkeypatch, make_router(seen=seen))
         _write_tree(repo, _TREE)
 
+        commit_all(repo)
         result = runner.invoke(app, ["schema", "push", str(ddl_file), "--path", str(repo), *_args("--yes")])
 
         assert result.exit_code == 0, result.output
@@ -509,65 +512,95 @@ class TestSchemaPush:
         assert "Schema version 2 stored" in result.output and "Ontology pushed" in result.output
         assert "no local `schema apply` marker" in result.output
 
-    def test_push_refuses_when_the_app_ontology_moved_since_apply(self, repo, ddl_file, monkeypatch):
+    def test_push_refuses_when_the_app_ontology_moved_since_apply(self, repo, commit_all, ddl_file, monkeypatch):
         route(monkeypatch, make_router(fingerprint="fp-2"))
         _write_tree(repo, _TREE)
         (repo / "cassis" / ".schema-apply.json").write_text(
             json.dumps({"plan_id": _PLAN_ID, "base_ontology_fingerprint": "fp-1"})
         )
 
+        commit_all(repo)
         result = runner.invoke(app, ["schema", "push", str(ddl_file), "--path", str(repo), *_args("--yes")])
 
         assert result.exit_code == 1 and "changed since" in result.output
 
-    def test_push_warehouse_applies_the_warehouse_plan(self, repo, monkeypatch):
+    def test_push_warehouse_applies_the_warehouse_plan(self, repo, commit_all, monkeypatch):
         seen = []
         route(monkeypatch, make_router(seen=seen))
         _write_tree(repo, _TREE)
 
+        commit_all(repo)
         result = runner.invoke(app, ["schema", "push", "--warehouse", "--path", str(repo), *_args("--yes")])
 
         assert result.exit_code == 0, result.output
         posts = [p.rsplit("/", 1)[-1] for m, p, _c in seen if m == "POST"]
         assert posts == ["warehouse", "apply", "import"]
 
-    def test_push_json_keeps_stdout_to_the_record(self, repo, ddl_file, monkeypatch):
+    def test_push_json_keeps_stdout_to_the_record(self, repo, commit_all, ddl_file, monkeypatch):
         route(monkeypatch, make_router())
         _write_tree(repo, _TREE)
+        commit_all(repo)
         result = runner.invoke(app, ["schema", "push", str(ddl_file), "--path", str(repo), *_args("--yes", "--json")])
         assert result.exit_code == 0, result.output
         payload = json.loads(result.stdout)
         assert payload["plan"]["status"] == "applied" and payload["upload"]["table_count"] == 1
         assert "Plan ready" in result.stderr
 
-    def test_push_publish_flag(self, repo, ddl_file, monkeypatch):
+    def test_push_publish_flag(self, repo, commit_all, ddl_file, monkeypatch):
         route(monkeypatch, make_router())
         _write_tree(repo, _TREE)
+        commit_all(repo)
         result = runner.invoke(
             app, ["schema", "push", str(ddl_file), "--path", str(repo), *_args("--yes", "--publish")]
         )
         assert result.exit_code == 0, result.output
         assert "published as v2" in result.output
 
-    def test_push_without_yes_and_without_tty_is_a_usage_error(self, repo, ddl_file, monkeypatch):
+    def test_push_without_yes_and_without_tty_is_a_usage_error(self, repo, commit_all, ddl_file, monkeypatch):
         route(monkeypatch, make_router())
         _write_tree(repo, _TREE)
+        commit_all(repo)
         result = runner.invoke(app, ["schema", "push", str(ddl_file), "--path", str(repo), *_args()])
         assert result.exit_code == 2 and "pass --yes" in result.output
 
-    def test_push_of_a_stale_plan_exits_one(self, repo, ddl_file, monkeypatch):
+    def test_push_of_a_stale_plan_exits_one(self, repo, commit_all, ddl_file, monkeypatch):
         route(monkeypatch, make_router(plan_status="stale", document=None, error="Schema plan is stale"))
         _write_tree(repo, _TREE)
+        commit_all(repo)
         result = runner.invoke(app, ["schema", "push", str(ddl_file), "--path", str(repo), *_args("--yes")])
         assert result.exit_code == 1
 
-    def test_push_of_an_empty_plan_uploads_the_ontology_only(self, repo, ddl_file, monkeypatch):
+    def test_push_of_an_empty_plan_uploads_the_ontology_only(self, repo, commit_all, ddl_file, monkeypatch):
         seen = []
         route(monkeypatch, make_router(document=_EMPTY_DOC, seen=seen))
         _write_tree(repo, _TREE)
+        commit_all(repo)
         result = runner.invoke(app, ["schema", "push", str(ddl_file), "--path", str(repo), *_args("--yes")])
         assert result.exit_code == 0, result.output
         assert not any(p.endswith("/apply") for _m, p, _c in seen)
+
+    def test_push_of_an_uncommitted_tree_exits_two_before_any_request(self, repo, commit_all, ddl_file, monkeypatch):
+        seen = []
+        route(monkeypatch, make_router(seen=seen))
+        _write_tree(repo, _TREE)  # what `schema apply` wrote, not committed yet
+
+        result = runner.invoke(app, ["schema", "push", str(ddl_file), "--path", str(repo), *_args("--yes")])
+
+        assert result.exit_code == 2, result.output
+        assert "Uncommitted changes under cassis/" in result.output
+        assert seen == []  # no plan, no apply, no upload
+
+    def test_push_sends_head_with_the_upload(self, repo, commit_all, ddl_file, monkeypatch):
+        seen = []
+        route(monkeypatch, make_router(seen=seen))
+        _write_tree(repo, _TREE)
+        head = commit_all(repo)
+
+        result = runner.invoke(app, ["schema", "push", str(ddl_file), "--path", str(repo), *_args("--yes")])
+
+        assert result.exit_code == 0, result.output
+        upload = next(c for m, p, c in seen if m == "POST" and p.endswith("/ontology/import"))
+        assert json.loads(upload)["git_commit_sha"] == head
 
 
 _DDL_COMMANDS = [["schema", "plan"], ["schema", "apply"], ["schema", "push", "--yes"]]
@@ -575,12 +608,13 @@ _DDL_COMMANDS = [["schema", "plan"], ["schema", "apply"], ["schema", "push", "--
 
 class TestSchemaInputs:
     @pytest.mark.parametrize("command", _DDL_COMMANDS, ids=lambda c: c[1])
-    def test_missing_ddl_file_exits_two_before_any_plan(self, repo, tmp_path, monkeypatch, command):
+    def test_missing_ddl_file_exits_two_before_any_plan(self, repo, commit_all, tmp_path, monkeypatch, command):
         seen = []
         route(monkeypatch, make_router(seen=seen))
         _write_tree(repo, _REMOTE)
         missing = tmp_path / "missing.sql"
 
+        commit_all(repo)
         result = runner.invoke(app, [*command, str(missing), "--path", str(repo), *_args()])
 
         assert result.exit_code == 2
@@ -588,21 +622,23 @@ class TestSchemaInputs:
         assert not any(p.endswith("/schema/plans") for _m, p, _c in seen)
 
     @pytest.mark.parametrize("command", _DDL_COMMANDS, ids=lambda c: c[1])
-    def test_empty_ddl_file_exits_two(self, repo, tmp_path, monkeypatch, command):
+    def test_empty_ddl_file_exits_two(self, repo, commit_all, tmp_path, monkeypatch, command):
         seen = []
         route(monkeypatch, make_router(seen=seen))
         _write_tree(repo, _REMOTE)
         empty = tmp_path / "empty.sql"
         empty.write_text("   \n", encoding="utf-8")
 
+        commit_all(repo)
         result = runner.invoke(app, [*command, str(empty), "--path", str(repo), *_args()])
 
         assert result.exit_code == 2 and "DDL file is empty" in result.output
         assert not any(p.endswith("/schema/plans") for _m, p, _c in seen)
 
     @pytest.mark.parametrize("command", _DDL_COMMANDS, ids=lambda c: c[1])
-    def test_missing_api_key_exits_two(self, repo, ddl_file, monkeypatch, command):
+    def test_missing_api_key_exits_two(self, repo, commit_all, ddl_file, monkeypatch, command):
         monkeypatch.delenv("CASSIS_API_KEY", raising=False)
+        commit_all(repo)
         result = runner.invoke(app, [*command, str(ddl_file), "--path", str(repo)])
         assert result.exit_code == 2 and "No API key" in result.output
 
@@ -631,10 +667,11 @@ class TestSchemaWaits:
         assert "Timed out after 0s: the plan is still planning" in result.output
         assert f"resume with: cassis schema apply --plan {_PLAN_ID}" in result.output
 
-    def test_push_apply_timeout_exits_three_and_points_at_status(self, repo, ddl_file, monkeypatch):
+    def test_push_apply_timeout_exits_three_and_points_at_status(self, repo, commit_all, ddl_file, monkeypatch):
         route(monkeypatch, make_router(apply_status="applying"))
         _write_tree(repo, _TREE)
 
+        commit_all(repo)
         result = runner.invoke(
             app, ["schema", "push", str(ddl_file), "--path", str(repo), *_args("--yes", "--timeout", "0")]
         )

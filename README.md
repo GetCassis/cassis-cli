@@ -5,7 +5,7 @@ Validate, test and evaluate your ontology from your terminal, then publish it. T
 - `cassis ontology check` validates the ontology files in your repository with the exact same checks as the Cassis GitHub PR check (YAML parsing, round-trip, import validation) — so you can gate merges in any CI system, not just GitHub. It then prints advisory **ontology quality warnings** for a tree that parsed — tables not assigned to any domain, joins/metrics pointing at unknown tables or columns, missing table/column descriptions (the same findings `ontology test` reports, without the agent run). In a checkout bound to a project (`project.yml`, `--project`, or `CASSIS_PROJECT_ID`), it also cross-checks the tree against the project's source schema: references to tables or columns the warehouse doesn't have print as **warnings** too — advisory only (the object may simply not be built or synced yet). Warnings never fail the check.
 - `cassis schema pull` downloads the data source's full source schema (as Cassis last introspected it) into `<base-path>/.schema.json` — a **gitignored** local snapshot (the command maintains the ignore entry) with a `pulled_at` stamp. The warehouse stays authoritative; the snapshot is a cache for offline/bulk work — e.g. a coding agent grepping table and column names during a modeling pass instead of paging through the MCP `get_source_schema` tool. Re-run to refresh.
 - `cassis ontology fmt` rewrites the ontology files in canonical form (think `black`/`gofmt` for the ontology), so hand or agent edits pass the round-trip check.
-- `cassis ontology upload` uploads the ontology files to a Cassis project (full replace) and, by default, publishes them immediately as a new version — so a merge to your main branch can go live in one CI step.
+- `cassis ontology upload` uploads the ontology files to a Cassis project (full replace) and, by default, publishes them immediately as a new version — so a merge to your main branch can go live in one CI step. It runs from a git checkout whose ontology files are committed, and the published version records that commit, so `cassis status` can tell whether a checkout matches what is live.
 - `cassis ontology pull` downloads the project's unpublished ontology into your repository checkout (full sync — stale local ontology files are pruned), so you can start editing from the current state, or bootstrap a repo that isn't git-synced (e.g. Bitbucket). Pruning only deletes files that are tracked and unmodified in git (i.e. restorable with `git checkout`); untracked or locally modified files are kept and listed, and every deleted path is printed.
 - `cassis ontology pull` and `cassis ontology fmt` also write `<base-path>/AGENTS.md`, the Cassis ontology modeling guide, into the checkout (default `cassis/AGENTS.md`) — a managed file (generated banner; the CLI overwrites local edits) so a repo-aware coding agent loads current Cassis modeling doctrine by convention. It sits inside the ontology directory but is not part of the ontology tree (which is the YAML files plus the domain Markdown files `domains/**/README.md`), so it is never uploaded, validated, or pruned. Commit it alongside your ontology changes. The guide text ships inside the CLI package, so its version tracks the **installed cassis-cli version** — upgrade the CLI (`pip install -U cassis-cli`) and re-run `fmt` to pick up doctrine updates; an unpinned `pip install cassis-cli` in CI gets them automatically. The banner stamps a doctrine version, and the CLI never *downgrades* the file: if the checkout's `AGENTS.md` was written by a newer doctrine (a newer CLI, or Cassis itself on a publish), `fmt`/`pull` leave it in place, print an upgrade notice, and `fmt --check` still passes.
 - The CLI identifies itself to the API (`User-Agent: cassis-cli/<version>`), and successful API responses advertise the newest published version — when you are behind, commands print a one-line upgrade notice on stderr (purely informational; output and exit codes are unchanged).
@@ -57,7 +57,8 @@ cassis ontology check /path/to/checkout
 # --no-prune keeps even the tracked stale files it would otherwise delete):
 cassis ontology pull --project 019f0000-0000-7000-8000-000000000000
 
-# Upload the ontology to a project and publish it immediately:
+# Upload the ontology to a project and publish it immediately (commit the
+# changes under cassis/ first: uploads refuse uncommitted ontology files):
 cassis ontology upload --project 019f0000-0000-7000-8000-000000000000
 
 # Upload without publishing (the tree becomes the project's unpublished ontology, to review in Cassis):
@@ -118,6 +119,7 @@ cassis schema pull
 # Preview, apply locally and push a schema update from a DDL file (DDL-only projects):
 cassis schema plan schema.sql --complete
 cassis schema apply schema.sql --complete      # writes cassis/ locally
+git add cassis && git commit -m "Apply schema update"  # push needs the tree committed
 cassis schema push schema.sql --complete --yes  # schema + ontology to the app
 cassis schema plan --warehouse                   # warehouse-connected projects: introspect instead
 cassis schema plan future.sql --dry-run --write-checkout  # plan a not-yet-deployed DDL, keep nothing server-side
@@ -194,7 +196,7 @@ cassis ontology fmt --check
 | ---- | ------------------------------------------------------------------------------ |
 | 0    | Ontology is valid (check) / pulled (pull) / uploaded (upload) / eval run completed all-passed (eval run) / every probe completed (test — whatever its outcome; probes are informational, don't gate CI on them) |
 | 1    | Validation failed (check: findings printed; upload: nothing imported; eval run: invalid tree, failed cases, or failed/cancelled run; test: invalid tree or a probe failed; add-case: duplicate question or gold SQL that does not run; delete-case: no such case in the project; issues: no such issue or occurrence in the project; issues analyze: failed or cancelled analysis run; schema plan/apply: extraction is incomplete, the plan failed (unparseable or truncated DDL), is stale or expired, the apply failed, or the project won't accept it (a plan is being applied, a DDL was given for a warehouse-connected project, or --warehouse for a DDL-only one)) |
-| 2    | Usage error (missing API key or project, no ontology directory, unreadable file, tree over the size limits, `eval run --branch` naming an ontology branch the project does not have) |
+| 2    | Usage error (missing API key or project, no ontology directory, unreadable file, tree over the size limits, `eval run --branch` naming an ontology branch the project does not have, `upload` or `schema push` outside a git checkout or with uncommitted ontology files) |
 | 3    | Transport/API error (unreachable API, invalid key, inaccessible project, unexpected response), another eval run or issue analysis already active, out of credits, or `--timeout` reached |
 
 Commands that send the local tree (`check`, `fmt`, `upload`, `eval run`, `test`) accept up to
@@ -277,7 +279,7 @@ ontology-eval:
     CASSIS_PROJECT_ID: $CASSIS_PROJECT_ID
 
 ontology-publish:
-  image: python:3.12-slim
+  image: python:3.12  # not -slim: the upload needs git to record the commit
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   script:

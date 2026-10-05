@@ -106,6 +106,7 @@ def _timeout_of(call, body):
                 project_id="p1",
                 files=_FILES,
                 publish=False,
+                git_commit_sha="a" * 40,
                 transport=transport,
             ),
             _IMPORT_BODY,

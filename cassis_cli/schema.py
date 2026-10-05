@@ -46,6 +46,7 @@ from cassis_cli.common import (
     collect_tree,
     poll_until,
     require_api_key,
+    require_committed_tree,
     resolve_project_id,
     sync_ontology_tree,
 )
@@ -434,15 +435,17 @@ def push(
     Two steps, in order: the new schema (a DDL file, or the connected
     warehouse with --warehouse) is planned and applied server-side (new
     schema version, tracked schema updated, ontology edits the plan lists),
-    then the local ontology tree replaces the project's unpublished ontology
-    (so hand edits made after `cassis schema apply` land too). Pass --publish
-    to publish it as a new version. Exits 0 when pushed, 1 when the plan
-    failed / is stale or the upload was rejected, 2 on usage errors, 3 on
-    transport errors.
+    then the local ontology tree replaces the project's unpublished ontology.
+    Commit the tree `cassis schema apply` wrote, and any hand edits, before
+    pushing: the push refuses uncommitted changes under the base path, and a
+    published version records the commit. Pass --publish to publish it as a
+    new version. Exits 0 when pushed, 1 when the plan failed / is stale or the
+    upload was rejected, 2 on usage errors, 3 on transport errors.
     """
     api_key = require_api_key(api_key)
     _require_one_source(ddl_file, warehouse)
     files, base_path = collect_tree(path, base_path)
+    head = require_committed_tree(path, base_path, files)
     resolved_project = resolve_project_id(project_id, path / Path(base_path), quiet=json_output)
     assert resolved_project is not None
 
@@ -506,7 +509,13 @@ def push(
     typer.echo(f"Uploading {len(files)} ontology file(s)…", err=True)
     try:
         upload = post_ontology_import(
-            api_url=api_url, api_key=api_key, project_id=resolved_project, files=files, publish=publish, label=label
+            api_url=api_url,
+            api_key=api_key,
+            project_id=resolved_project,
+            files=files,
+            publish=publish,
+            git_commit_sha=head,
+            label=label,
         )
     except UploadValidationError as exc:
         typer.secho("Ontology upload rejected:", fg=typer.colors.RED, bold=True, err=True)
@@ -572,8 +581,8 @@ def _require_checkout_in_sync(
     if len(differing) > 10:
         typer.secho(f"  … {len(differing) - 10} more", fg=typer.colors.RED, err=True)
     typer.secho(
-        "Bring the checkout up to date first (`cassis ontology pull`), or push your local edits "
-        "(`cassis ontology upload --no-publish`), then apply again. `--force` overwrites the local files.",
+        "Bring the checkout up to date first (`cassis ontology pull`), or commit your local edits and push "
+        "them (`cassis ontology upload --no-publish`), then apply again. `--force` overwrites the local files.",
         fg=typer.colors.RED,
         err=True,
     )
