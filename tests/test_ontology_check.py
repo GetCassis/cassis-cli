@@ -87,7 +87,7 @@ class TestOntologyCheckCommand:
     def test_pass_exits_zero(self, repo, monkeypatch):
         _mock_api(monkeypatch, _passing_handler)
 
-        result = runner.invoke(app, ["ontology", "check", str(repo), "--api-key", "sk-k6-test"])
+        result = runner.invoke(app, ["context", "check", str(repo), "--api-key", "sk-k6-test"])
 
         assert result.exit_code == 0
         assert "Ontology is valid" not in result.output  # success prints the summary line
@@ -96,17 +96,17 @@ class TestOntologyCheckCommand:
     def test_audit_warnings_are_printed_without_failing(self, repo, monkeypatch):
         _mock_api(monkeypatch, _audit_warning_handler)
 
-        result = runner.invoke(app, ["ontology", "check", str(repo), "--api-key", "sk-k6-test"])
+        result = runner.invoke(app, ["context", "check", str(repo), "--api-key", "sk-k6-test"])
 
         assert result.exit_code == 0, "advisory warnings must not change the exit code"
-        assert "1 ontology quality warning(s)" in result.output
+        assert "1 context quality warning(s)" in result.output
         assert "[unassigned_table] public.orders" in result.output
 
     def test_response_without_warnings_field_is_tolerated(self, repo, monkeypatch):
         # A server older than the warnings field omits it; the CLI must not KeyError.
         _mock_api(monkeypatch, _passing_handler)
 
-        result = runner.invoke(app, ["ontology", "check", str(repo), "--api-key", "sk-k6-test"])
+        result = runner.invoke(app, ["context", "check", str(repo), "--api-key", "sk-k6-test"])
 
         assert result.exit_code == 0
         assert "warning" not in result.output
@@ -114,7 +114,7 @@ class TestOntologyCheckCommand:
     def test_failure_exits_one_and_prints_findings(self, repo, monkeypatch):
         _mock_api(monkeypatch, _failing_handler)
 
-        result = runner.invoke(app, ["ontology", "check", str(repo), "--api-key", "sk-k6-test"])
+        result = runner.invoke(app, ["context", "check", str(repo), "--api-key", "sk-k6-test"])
 
         assert result.exit_code == 1
         assert "YAML errors" in result.output
@@ -124,19 +124,19 @@ class TestOntologyCheckCommand:
     def test_json_output(self, repo, monkeypatch):
         _mock_api(monkeypatch, _failing_handler)
 
-        result = runner.invoke(app, ["ontology", "check", str(repo), "--api-key", "sk-k6-test", "--json"])
+        result = runner.invoke(app, ["context", "check", str(repo), "--api-key", "sk-k6-test", "--json"])
 
         assert result.exit_code == 1
         assert json.loads(result.output)["passed"] is False
 
     def test_missing_api_key_exits_two(self, repo, monkeypatch):
         monkeypatch.delenv("CASSIS_API_KEY", raising=False)
-        result = runner.invoke(app, ["ontology", "check", str(repo)])
+        result = runner.invoke(app, ["context", "check", str(repo)])
         assert result.exit_code == 2
         assert "No API key" in result.output
 
     def test_missing_ontology_dir_exits_two(self, tmp_path):
-        result = runner.invoke(app, ["ontology", "check", str(tmp_path), "--api-key", "sk-k6-test"])
+        result = runner.invoke(app, ["context", "check", str(tmp_path), "--api-key", "sk-k6-test"])
         assert result.exit_code == 2
         assert "No cassis/" in result.output
 
@@ -157,7 +157,7 @@ class TestOntologyCheckCommand:
 
         result = runner.invoke(
             app,
-            ["ontology", "check", str(tmp_path), "--api-key", "sk-k6-test", "--base-path", "dbt/cassis"],
+            ["context", "check", str(tmp_path), "--api-key", "sk-k6-test", "--base-path", "dbt/cassis"],
         )
 
         assert result.exit_code == 0
@@ -167,7 +167,7 @@ class TestOntologyCheckCommand:
     def test_invalid_key_exits_three(self, repo, monkeypatch):
         _mock_api(monkeypatch, lambda request: httpx.Response(401, json={"detail": "Invalid or expired API key"}))
 
-        result = runner.invoke(app, ["ontology", "check", str(repo), "--api-key", "sk-k6-bad"])
+        result = runner.invoke(app, ["context", "check", str(repo), "--api-key", "sk-k6-bad"])
 
         assert result.exit_code == 3
         assert "invalid or expired" in result.output.lower()
@@ -178,7 +178,7 @@ class TestOntologyCheckCommand:
 
         _mock_api(monkeypatch, handler)
 
-        result = runner.invoke(app, ["ontology", "check", str(repo), "--api-key", "sk-k6-test"])
+        result = runner.invoke(app, ["context", "check", str(repo), "--api-key", "sk-k6-test"])
 
         assert result.exit_code == 3
         assert "Could not reach" in result.output
@@ -187,7 +187,7 @@ class TestOntologyCheckCommand:
         """A proxy/portal answering HTML with a 200 is a transport error (3), not a validation failure (1)."""
         _mock_api(monkeypatch, lambda request: httpx.Response(200, text="<html>corporate proxy</html>"))
 
-        result = runner.invoke(app, ["ontology", "check", str(repo), "--api-key", "sk-k6-test"])
+        result = runner.invoke(app, ["context", "check", str(repo), "--api-key", "sk-k6-test"])
 
         assert result.exit_code == 3
         assert "non-JSON response" in result.output
@@ -195,7 +195,7 @@ class TestOntologyCheckCommand:
     def test_unexpected_response_shape_exits_three(self, repo, monkeypatch):
         _mock_api(monkeypatch, lambda request: httpx.Response(200, json={"detail": "something else"}))
 
-        result = runner.invoke(app, ["ontology", "check", str(repo), "--api-key", "sk-k6-test"])
+        result = runner.invoke(app, ["context", "check", str(repo), "--api-key", "sk-k6-test"])
 
         assert result.exit_code == 3
         assert "Unexpected response shape" in result.output
@@ -204,7 +204,7 @@ class TestOntologyCheckCommand:
         """A non-UTF-8 file is a local usage error (2), reported before any upload — never exit 1."""
         (repo / "cassis" / "latin1.yml").write_bytes("clé: café\n".encode("latin-1"))
 
-        result = runner.invoke(app, ["ontology", "check", str(repo), "--api-key", "sk-k6-test"])
+        result = runner.invoke(app, ["context", "check", str(repo), "--api-key", "sk-k6-test"])
 
         assert result.exit_code == 2
         assert "Cannot read" in result.output
@@ -219,7 +219,7 @@ class TestOntologyCheckCommand:
 
         _mock_api(monkeypatch, handler)
 
-        result = runner.invoke(app, ["ontology", "check", str(repo), "--api-key", "sk-k6-test"])
+        result = runner.invoke(app, ["context", "check", str(repo), "--api-key", "sk-k6-test"])
 
         assert result.exit_code == 2
         assert "too large" in result.output
@@ -244,7 +244,7 @@ class TestOntologyCheckCommand:
 
         _mock_api(monkeypatch, handler)
 
-        result = runner.invoke(app, ["ontology", "check", str(repo), "--api-key", "sk-k6-test"])
+        result = runner.invoke(app, ["context", "check", str(repo), "--api-key", "sk-k6-test"])
 
         assert result.exit_code == 2
         assert "too large" in result.output
@@ -301,7 +301,7 @@ class TestOntologyCheckProjectScoping:
 
         _mock_api(monkeypatch, handler)
 
-        result = runner.invoke(app, ["ontology", "check", str(repo), "--api-key", "sk-k6-test"])
+        result = runner.invoke(app, ["context", "check", str(repo), "--api-key", "sk-k6-test"])
 
         assert result.exit_code == 0
         assert seen["url"].endswith(f"/api/ci/projects/{_PROJECT_ID}/ontology/check")
@@ -319,7 +319,7 @@ class TestOntologyCheckProjectScoping:
 
         _mock_api(monkeypatch, handler)
 
-        result = runner.invoke(app, ["ontology", "check", str(repo), "--api-key", "sk-k6-test"])
+        result = runner.invoke(app, ["context", "check", str(repo), "--api-key", "sk-k6-test"])
 
         assert result.exit_code == 0
         assert seen["url"].endswith("/api/ci/ontology-check")
@@ -350,7 +350,7 @@ class TestOntologyCheckProjectScoping:
 
         _mock_api(monkeypatch, handler)
 
-        result = runner.invoke(app, ["ontology", "check", str(repo), "--api-key", "sk-k6-test"])
+        result = runner.invoke(app, ["context", "check", str(repo), "--api-key", "sk-k6-test"])
 
         assert result.exit_code == 0
         assert "1 schema reference warning(s)" in result.output
@@ -382,16 +382,16 @@ class TestOntologyCheckProjectScoping:
 
         _mock_api(monkeypatch, handler)
 
-        result = runner.invoke(app, ["ontology", "check", str(repo), "--api-key", "sk-k6-test"])
+        result = runner.invoke(app, ["context", "check", str(repo), "--api-key", "sk-k6-test"])
 
         assert result.exit_code == 0
         assert "Schema references resolve" in result.output
-        assert "1 ontology quality warning(s)" in result.output
+        assert "1 context quality warning(s)" in result.output
         assert "[missing_table_description] public.orders" in result.output
 
     def test_invalid_project_id_exits_two(self, repo, monkeypatch):
         result = runner.invoke(
-            app, ["ontology", "check", str(repo), "--api-key", "sk-k6-test", "--project", "not-a-uuid"]
+            app, ["context", "check", str(repo), "--api-key", "sk-k6-test", "--project", "not-a-uuid"]
         )
         assert result.exit_code == 2
         assert "must be a project ID" in result.output
@@ -416,7 +416,7 @@ class TestOntologyCheckProjectScoping:
 
         _mock_api(monkeypatch, handler)
 
-        result = runner.invoke(app, ["ontology", "check", str(repo), "--api-key", "sk-k6-test"])
+        result = runner.invoke(app, ["context", "check", str(repo), "--api-key", "sk-k6-test"])
 
         assert result.exit_code == 0
         assert "Schema reference check skipped" in result.output

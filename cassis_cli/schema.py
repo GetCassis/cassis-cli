@@ -2,7 +2,7 @@
 
 The source schema is OBSERVED state (the warehouse is authoritative), so the
 snapshot is a gitignored cache, never a committed file: `pull` writes
-`<base-path>/.schema.json` and keeps it out of git via the ontology dir's
+`<base-path>/.schema.json` and keeps it out of git via the context directory's
 `.gitignore`. Agents working in a checkout grep it instead of paging through
 the MCP `get_source_schema` tool; `pulled_at` records how stale it is.
 """
@@ -70,7 +70,7 @@ _GITIGNORED = (SNAPSHOT_FILENAME, APPLY_MARKER_FILENAME)
 def pull(
     path: Path = typer.Argument(
         Path("."),
-        help="Repository checkout root (the directory containing the ontology export path).",
+        help="Repository checkout root (the directory containing the context export path).",
     ),
     project_id: Optional[str] = typer.Option(
         None,
@@ -94,7 +94,7 @@ def pull(
         DEFAULT_BASE_PATH,
         "--base-path",
         envvar="CASSIS_BASE_PATH",
-        help="Repository directory the ontology is exported under (the project's git-sync Path setting).",
+        help="Repository directory the context is exported under (the project's git-sync Path setting).",
     ),
 ) -> None:
     """Download the source schema into `<base-path>/.schema.json` (gitignored).
@@ -168,7 +168,7 @@ def ensure_gitignored(ontology_dir: Path) -> None:
 
 
 _PATH_OPTION = typer.Option(
-    Path("."), "--path", help="Repository checkout root (the directory containing the ontology export path)."
+    Path("."), "--path", help="Repository checkout root (the directory containing the context export path)."
 )
 _PROJECT_OPTION = typer.Option(
     None,
@@ -187,7 +187,7 @@ _BASE_PATH_OPTION = typer.Option(
     DEFAULT_BASE_PATH,
     "--base-path",
     envvar="CASSIS_BASE_PATH",
-    help="Repository directory the ontology is exported under (the project's git-sync Path setting).",
+    help="Repository directory the context is exported under (the project's git-sync Path setting).",
 )
 _COMPLETE_OPTION = typer.Option(
     False,
@@ -242,16 +242,16 @@ def plan(
     write_checkout: bool = typer.Option(
         False,
         "--write-checkout",
-        help="With --dry-run: also write the ontology files the plan would produce under <path>/<base-path>.",
+        help="With --dry-run: also write the context files the plan would produce under <path>/<base-path>.",
     ),
 ) -> None:
     """Preview what a schema update would change. Nothing is applied.
 
     Cassis diffs the new schema (a DDL file, or with --warehouse the connected
     warehouse introspected server-side) against the stored schema and derives
-    the ontology edits it implies: every change on a table that is in the
-    ontology (placed in a domain), with everything a drop would take with it.
-    Tables outside the ontology only move the schema. A file speaks only for
+    the context edits it implies: every change on a table that is in the
+    context (placed in a domain), with everything a drop would take with it.
+    Tables outside the context only move the schema. A file speaks only for
     the schemas it contains unless --complete; a warehouse plan is always
     whole-source. Exits 0 when the plan is ready (even when it is empty), 1
     when the plan failed (unparseable or truncated DDL, unreachable
@@ -260,7 +260,7 @@ def plan(
     --dry-run is the prepare-ahead gesture: the plan is computed synchronously
     and nothing is kept server-side, so it works for a schema change that is
     still a PR (the desired schema snapshot) and leaves the project's current plan
-    alone. --write-checkout then writes the resulting ontology files into the
+    alone. --write-checkout then writes the resulting context files into the
     checkout, to commit next to the schema change; nothing is pushed.
     """
     api_key = require_api_key(api_key)
@@ -291,7 +291,7 @@ def plan(
             ontology_dir = path / base_path.strip().strip("/")
             written, deleted, _kept = _write_checkout(ontology_dir, preview["files"], json_output=json_output)
             typer.secho(
-                f"✓ Wrote {len(written)} ontology file(s) into {ontology_dir}"
+                f"✓ Wrote {len(written)} context file(s) into {ontology_dir}"
                 + (f", deleted {len(deleted)} stale file(s)" if deleted else "")
                 + ". The app is unchanged.",
                 fg=typer.colors.GREEN,
@@ -327,7 +327,7 @@ def apply(
     warehouse: bool = _WAREHOUSE_OPTION,
     plan_id: Optional[str] = typer.Option(None, "--plan", help="Write this ready plan instead of planning a file."),
     force: bool = typer.Option(
-        False, "--force", help="Write even if the local ontology differs from the app's (local edits are overwritten)."
+        False, "--force", help="Write even if the local context differs from the app's (local edits are overwritten)."
     ),
     path: Path = _PATH_OPTION,
     project_id: Optional[str] = _PROJECT_OPTION,
@@ -339,12 +339,12 @@ def apply(
     timeout: float = _TIMEOUT_OPTION,
     json_output: bool = _JSON_OPTION,
 ) -> None:
-    """Plan a DDL update and write the resulting ontology into the local checkout. The app is not modified.
+    """Plan a DDL update and write the resulting context into the local checkout. The app is not modified.
 
-    GitOps: the plan is computed server-side (read-only), then the ontology
+    GitOps: the plan is computed server-side (read-only), then the context
     files it would produce are written under <path>/<base-path> (renamed
     tables, dropped columns, rewritten joins and metrics) for you to review
-    with `git diff`, edit, commit. Stale ontology files (dropped tables and
+    with `git diff`, edit, commit. Stale context files (dropped tables and
     joins) are deleted when git can restore them. Send the result with
     `cassis schema push <ddl>`. Exits 0 when written, 1 when the plan failed /
     is stale, 2 on usage errors, 3 on transport errors.
@@ -391,7 +391,7 @@ def apply(
         typer.echo(json.dumps({"plan": record, "written": written, "deleted": deleted, "kept": kept}, indent=2))
         raise typer.Exit(EXIT_OK)
     typer.secho(
-        f"✓ Wrote {len(written)} ontology file(s) into {ontology_dir}"
+        f"✓ Wrote {len(written)} context file(s) into {ontology_dir}"
         + (f", deleted {len(deleted)} stale file(s)" if deleted else "")
         + ". The app is unchanged.",
         fg=typer.colors.GREEN,
@@ -414,11 +414,11 @@ def apply(
 @app.command()
 def push(
     ddl_file: Optional[Path] = typer.Argument(
-        None, help="The DDL file the local ontology was applied against. Or --warehouse."
+        None, help="The DDL file the local context was applied against. Or --warehouse."
     ),
     warehouse: bool = _WAREHOUSE_OPTION,
     yes: bool = typer.Option(False, "--yes", "-y", help="Push without the confirmation prompt (CI)."),
-    publish: bool = typer.Option(False, "--publish", help="Publish the pushed ontology as a new version."),
+    publish: bool = typer.Option(False, "--publish", help="Publish the pushed context as a new version."),
     label: Optional[str] = typer.Option(None, "--label", help="Label for the published version."),
     path: Path = _PATH_OPTION,
     project_id: Optional[str] = _PROJECT_OPTION,
@@ -430,12 +430,12 @@ def push(
     timeout: float = _TIMEOUT_OPTION,
     json_output: bool = _JSON_OPTION,
 ) -> None:
-    """Push the new schema and the local ontology to the app.
+    """Push the new schema and the local context to the app.
 
     Two steps, in order: the new schema (a DDL file, or the connected
     warehouse with --warehouse) is planned and applied server-side (new
-    schema version, tracked schema updated, ontology edits the plan lists),
-    then the local ontology tree replaces the project's unpublished ontology.
+    schema version, tracked schema updated, context edits the plan lists),
+    then the local context tree replaces the project's unpublished context.
     Commit the tree `cassis schema apply` wrote, and any hand edits, before
     pushing: the push refuses uncommitted changes under the base path, and a
     published version records the commit. Pass --publish to publish it as a
@@ -468,7 +468,7 @@ def push(
         if not (sys.stdin.isatty() and sys.stdout.isatty()) or json_output:
             typer.secho("Refusing to push without confirmation: pass --yes.", fg=typer.colors.RED, err=True)
             raise typer.Exit(EXIT_USAGE)
-        if not typer.confirm(f"Push the schema and {len(files)} ontology file(s) to the app?", default=False):
+        if not typer.confirm(f"Push the schema and {len(files)} context file(s) to the app?", default=False):
             typer.secho("Nothing pushed.", fg=typer.colors.YELLOW, err=True)
             raise typer.Exit(EXIT_OK)
 
@@ -504,9 +504,9 @@ def push(
         result = record.get("apply_result") or {}
         typer.secho(f"✓ Schema version {result.get('schema_version', '?')} stored.", fg=typer.colors.GREEN, err=True)
     else:
-        typer.secho("Schema is up to date; pushing the ontology only.", err=True)
+        typer.secho("Schema is up to date; pushing the context only.", err=True)
 
-    typer.echo(f"Uploading {len(files)} ontology file(s)…", err=True)
+    typer.echo(f"Uploading {len(files)} context file(s)…", err=True)
     try:
         upload = post_ontology_import(
             api_url=api_url,
@@ -518,7 +518,7 @@ def push(
             label=label,
         )
     except UploadValidationError as exc:
-        typer.secho("Ontology upload rejected:", fg=typer.colors.RED, bold=True, err=True)
+        typer.secho("Context upload rejected:", fg=typer.colors.RED, bold=True, err=True)
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(EXIT_VALIDATION_FAILED) from exc
     except (AuthError, ApiError) as exc:
@@ -533,11 +533,9 @@ def push(
     )
     version = upload.get("published_version")
     if version is not None:
-        typer.secho(f"✓ Ontology pushed and published as v{version} ({counts}).", fg=typer.colors.GREEN)
+        typer.secho(f"✓ Context pushed and published as v{version} ({counts}).", fg=typer.colors.GREEN)
     else:
-        typer.secho(
-            f"✓ Ontology pushed ({counts}); it is now the project's unpublished ontology.", fg=typer.colors.GREEN
-        )
+        typer.secho(f"✓ Context pushed ({counts}); it is now the project's unpublished context.", fg=typer.colors.GREEN)
     raise typer.Exit(EXIT_OK)
 
 
@@ -566,13 +564,13 @@ def _require_checkout_in_sync(
         return
     if force:
         typer.secho(
-            f"warning: {len(differing)} local ontology file(s) differ from the app and will be overwritten (--force).",
+            f"warning: {len(differing)} local context file(s) differ from the app and will be overwritten (--force).",
             fg=typer.colors.YELLOW,
             err=True,
         )
         return
     typer.secho(
-        f"The local ontology in {base_path}/ differs from the app's ({len(differing)} file(s)):",
+        f"The local context in {base_path}/ differs from the app's ({len(differing)} file(s)):",
         fg=typer.colors.RED,
         err=True,
     )
@@ -581,8 +579,8 @@ def _require_checkout_in_sync(
     if len(differing) > 10:
         typer.secho(f"  … {len(differing) - 10} more", fg=typer.colors.RED, err=True)
     typer.secho(
-        "Bring the checkout up to date first (`cassis ontology pull`), or commit your local edits and push "
-        "them (`cassis ontology upload --no-publish`), then apply again. `--force` overwrites the local files.",
+        "Bring the checkout up to date first (`cassis context pull`), or commit your local edits and push "
+        "them (`cassis context upload --no-publish`), then apply again. `--force` overwrites the local files.",
         fg=typer.colors.RED,
         err=True,
     )
@@ -617,7 +615,7 @@ def _require_marker_matches(ontology_dir: Path, record: "dict[str, Any]") -> Non
         marker = json.loads(marker_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         typer.secho(
-            "note: no local `schema apply` marker found; the push replaces the app's ontology with this checkout.",
+            "note: no local `schema apply` marker found; the push replaces the app's context with this checkout.",
             fg=typer.colors.YELLOW,
             err=True,
         )
@@ -626,8 +624,8 @@ def _require_marker_matches(ontology_dir: Path, record: "dict[str, Any]") -> Non
     current = record.get("base_ontology_fingerprint")
     if base and current and base != current:
         typer.secho(
-            "The app's ontology changed since `cassis schema apply` rendered this checkout: pushing would revert "
-            "those edits. Run `cassis ontology pull`, resolve the differences in git, run `cassis schema apply` "
+            "The app's context changed since `cassis schema apply` rendered this checkout: pushing would revert "
+            "those edits. Run `cassis context pull`, resolve the differences in git, run `cassis schema apply` "
             "again, then push.",
             fg=typer.colors.RED,
             err=True,

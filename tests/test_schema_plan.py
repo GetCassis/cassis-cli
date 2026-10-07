@@ -302,7 +302,7 @@ class TestSchemaPlan:
         result = runner.invoke(app, ["schema", "plan", str(ddl_file), "--path", str(repo), *_args("--json")])
         assert result.exit_code == 0, result.output
         assert json.loads(result.stdout)["status"] == "ready"
-        assert "Ontology changes" in result.stderr
+        assert "Context changes" in result.stderr
 
     def test_plan_failure_exits_one_with_the_server_message(self, repo, ddl_file, monkeypatch):
         route(monkeypatch, make_router(plan_status="failed", document=None, error="Is the file complete?"))
@@ -373,7 +373,7 @@ class TestSchemaPlanDryRun:
         assert result.exit_code == 0, result.output
         assert (repo / "cassis" / "tables" / "public" / "orders.yml").read_text() == _TREE["tables/public/orders.yml"]
         assert not (repo / "cassis" / ".schema-apply.json").exists()
-        assert "Wrote 2 ontology file(s)" in result.output and "The app is unchanged" in result.output
+        assert "Wrote 2 context file(s)" in result.output and "The app is unchanged" in result.output
 
     def test_dry_run_warehouse_posts_the_warehouse_preview(self, repo, monkeypatch):
         seen = []
@@ -390,7 +390,7 @@ class TestSchemaPlanDryRun:
         assert result.exit_code == 0, result.output
         body = json.loads(result.stdout)
         assert "id" not in body and set(body["files"]) == set(_TREE)
-        assert "Ontology changes" in result.stderr
+        assert "Context changes" in result.stderr
 
     def test_dry_run_rejected_ddl_exits_one_with_the_server_detail(self, repo, ddl_file, monkeypatch):
         route(monkeypatch, make_router(preview_status=400, error="Is the file complete?"))
@@ -415,7 +415,7 @@ class TestSchemaApply:
 
         assert result.exit_code == 0, result.output
         assert (repo / "cassis" / "tables" / "public" / "orders.yml").read_text() == _TREE["tables/public/orders.yml"]
-        assert "Wrote 1 ontology file(s)" in result.output and "The app is unchanged" in result.output
+        assert "Wrote 1 context file(s)" in result.output and "The app is unchanged" in result.output
         assert "cassis schema push" in result.output
         marker = json.loads((repo / "cassis" / ".schema-apply.json").read_text())
         assert marker["base_ontology_fingerprint"] == "fp-1" and marker["plan_id"] == _PLAN_ID
@@ -430,7 +430,7 @@ class TestSchemaApply:
         result = runner.invoke(app, ["schema", "apply", str(ddl_file), "--path", str(repo), *_args()])
 
         assert result.exit_code == 1
-        assert "differs from the app" in result.output and "cassis ontology pull" in result.output
+        assert "differs from the app" in result.output and "cassis context pull" in result.output
         assert (repo / "cassis" / "tables" / "public" / "orders.yml").read_text() == "edited locally\n"
 
     def test_apply_force_overwrites_and_prunes_git_clean_files_only(self, repo, ddl_file, monkeypatch):
@@ -509,7 +509,7 @@ class TestSchemaPush:
         assert result.exit_code == 0, result.output
         order = [p.rsplit("/", 1)[-1] for m, p, _c in seen if m == "POST"]
         assert order.index("apply") < order.index("import")
-        assert "Schema version 2 stored" in result.output and "Ontology pushed" in result.output
+        assert "Schema version 2 stored" in result.output and "Context pushed" in result.output
         assert "no local `schema apply` marker" in result.output
 
     def test_push_refuses_when_the_app_ontology_moved_since_apply(self, repo, commit_all, ddl_file, monkeypatch):

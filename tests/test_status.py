@@ -212,7 +212,7 @@ class TestStatusSchemaPlanSummary:
         result = self._status(repo, monkeypatch, dict(_STATUS_BODY, schema_plan=plan))
         assert result.exit_code == 0, result.output
         assert (
-            "Schema plan: ready, 3 ontology change(s) (cassis schema apply --plan 019f0000-0000-7000-8000-00000000d001)"
+            "Schema plan: ready, 3 context change(s) (cassis schema apply --plan 019f0000-0000-7000-8000-00000000d001)"
             in result.output
         )
 

@@ -36,7 +36,7 @@ def list_projects(
     """List the projects available to the API key.
 
     Prints each project's id (what --project and CASSIS_PROJECT_ID take), name,
-    published ontology version, and data-source dialect. A schema-only source
+    published context version, and data-source dialect. A schema-only source
     (no connection) is marked "not executable": SQL is generated but never run.
     Exits 0 on success, 2 on usage errors, 3 on transport/API errors.
     """

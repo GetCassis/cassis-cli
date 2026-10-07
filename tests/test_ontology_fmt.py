@@ -60,7 +60,7 @@ def _fmt_handler(request):
 def test_fmt_rewrites_changed_files(repo, monkeypatch):
     _mock_api(monkeypatch, _fmt_handler)
 
-    result = runner.invoke(app, ["ontology", "fmt", str(repo), "--api-key", "sk-k6-test"])
+    result = runner.invoke(app, ["context", "fmt", str(repo), "--api-key", "sk-k6-test"])
 
     assert result.exit_code == 0, result.output
     assert "rewrote cassis/tables/public/orders.yml" in result.output
@@ -70,7 +70,7 @@ def test_fmt_rewrites_changed_files(repo, monkeypatch):
 def test_fmt_check_only_exits_1_and_writes_nothing(repo, monkeypatch):
     _mock_api(monkeypatch, _fmt_handler)
 
-    result = runner.invoke(app, ["ontology", "fmt", str(repo), "--api-key", "sk-k6-test", "--check"])
+    result = runner.invoke(app, ["context", "fmt", str(repo), "--api-key", "sk-k6-test", "--check"])
 
     assert result.exit_code == 1
     assert "would rewrite cassis/tables/public/orders.yml" in result.output
@@ -87,7 +87,7 @@ def test_fmt_already_canonical_exits_0(repo, monkeypatch):
 
     _mock_api(monkeypatch, handler)
 
-    result = runner.invoke(app, ["ontology", "fmt", str(repo), "--api-key", "sk-k6-test"])
+    result = runner.invoke(app, ["context", "fmt", str(repo), "--api-key", "sk-k6-test"])
 
     assert result.exit_code == 0
     assert "already canonical" in result.output
@@ -110,7 +110,7 @@ def test_fmt_removes_files_absent_from_canonical_tree(repo, monkeypatch):
 
     _mock_api(monkeypatch, handler)
 
-    result = runner.invoke(app, ["ontology", "fmt", str(repo), "--api-key", "sk-k6-test"])
+    result = runner.invoke(app, ["context", "fmt", str(repo), "--api-key", "sk-k6-test"])
 
     assert result.exit_code == 0
     assert "removed cassis/tables/public/orders.yml" in result.output
@@ -132,14 +132,14 @@ def test_fmt_unparseable_tree_exits_1(repo, monkeypatch):
 
     _mock_api(monkeypatch, handler)
 
-    result = runner.invoke(app, ["ontology", "fmt", str(repo), "--api-key", "sk-k6-test"])
+    result = runner.invoke(app, ["context", "fmt", str(repo), "--api-key", "sk-k6-test"])
 
     assert result.exit_code == 1
     assert "Cannot format" in result.output
 
 
 def test_fmt_requires_api_key(repo):
-    result = runner.invoke(app, ["ontology", "fmt", str(repo)], env={"CASSIS_API_KEY": ""})
+    result = runner.invoke(app, ["context", "fmt", str(repo)], env={"CASSIS_API_KEY": ""})
     assert result.exit_code == 2
 
 
@@ -162,7 +162,7 @@ def test_fmt_writes_missing_guide_even_when_yaml_canonical(tmp_path, monkeypatch
     # No AGENTS.md seeded → fmt should create it despite the YAML being canonical.
     _mock_api(monkeypatch, _canonical_yaml_handler)
 
-    result = runner.invoke(app, ["ontology", "fmt", str(tmp_path), "--api-key", "sk-k6-test"])
+    result = runner.invoke(app, ["context", "fmt", str(tmp_path), "--api-key", "sk-k6-test"])
 
     assert result.exit_code == 0, result.output
     assert "cassis/AGENTS.md" in result.output
@@ -177,7 +177,7 @@ def test_fmt_check_flags_stale_guide(tmp_path, monkeypatch):
     (ontology_dir / "AGENTS.md").write_text("stale hand-edited guide\n", encoding="utf-8")
     _mock_api(monkeypatch, _canonical_yaml_handler)
 
-    result = runner.invoke(app, ["ontology", "fmt", str(tmp_path), "--api-key", "sk-k6-test", "--check"])
+    result = runner.invoke(app, ["context", "fmt", str(tmp_path), "--api-key", "sk-k6-test", "--check"])
 
     assert result.exit_code == 1
     assert "would rewrite cassis/AGENTS.md" in result.output
@@ -204,11 +204,11 @@ def test_fmt_leaves_newer_doctrine_guide_alone(tmp_path, monkeypatch):
     (ontology_dir / "AGENTS.md").write_text(newer, encoding="utf-8")
     _mock_api(monkeypatch, _canonical_yaml_handler)
 
-    check = runner.invoke(app, ["ontology", "fmt", str(tmp_path), "--api-key", "sk-k6-test", "--check"])
+    check = runner.invoke(app, ["context", "fmt", str(tmp_path), "--api-key", "sk-k6-test", "--check"])
     assert check.exit_code == 0, check.output
     assert "newer Cassis doctrine" in check.output
 
-    write = runner.invoke(app, ["ontology", "fmt", str(tmp_path), "--api-key", "sk-k6-test"])
+    write = runner.invoke(app, ["context", "fmt", str(tmp_path), "--api-key", "sk-k6-test"])
     assert write.exit_code == 0, write.output
     assert (ontology_dir / "AGENTS.md").read_text(encoding="utf-8") == newer
 

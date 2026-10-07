@@ -32,7 +32,7 @@ def _step(title: str, fn: "Callable[[], None]") -> int:
 def verify(
     path: Path = typer.Argument(
         Path("."),
-        help="Repository checkout root (the directory containing the ontology export path).",
+        help="Repository checkout root (the directory containing the context export path).",
     ),
     project_id: Optional[str] = typer.Option(
         None,
@@ -56,7 +56,7 @@ def verify(
         DEFAULT_BASE_PATH,
         "--base-path",
         envvar="CASSIS_BASE_PATH",
-        help="Repository directory the ontology is exported under (the project's git-sync Path setting).",
+        help="Repository directory the context is exported under (the project's git-sync Path setting).",
     ),
     run_eval: bool = typer.Option(
         True,
@@ -64,7 +64,7 @@ def verify(
         help="Run the project's eval suite as the last gate (default: run it).",
     ),
 ) -> None:
-    """Run the three local gates in order: `ontology fmt --check`, `ontology check`, `eval run`.
+    """Run the three local gates in order: `context fmt --check`, `context check`, `eval run`.
 
     The same sequence the README's CI examples chain as separate jobs, stopping
     at the first failure. `fmt` runs in --check mode and writes nothing. Pass
@@ -75,15 +75,15 @@ def verify(
     api_key = require_api_key(api_key)
 
     code = _step(
-        "cassis ontology fmt --check",
+        "cassis context fmt --check",
         lambda: ontology_fmt(path=path, api_key=api_key, api_url=api_url, base_path=base_path, check_only=True),
     )
     if code != EXIT_OK:
-        typer.secho("Not canonical: run `cassis ontology fmt` and review the diff.", fg=typer.colors.RED, err=True)
+        typer.secho("Not canonical: run `cassis context fmt` and review the diff.", fg=typer.colors.RED, err=True)
         raise typer.Exit(code)
 
     code = _step(
-        "cassis ontology check",
+        "cassis context check",
         lambda: ontology_check(
             path=path,
             project_id=project_id,

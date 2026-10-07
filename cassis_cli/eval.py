@@ -117,7 +117,7 @@ def _git_branch(path: Path) -> Optional[str]:
 def _print_validation_failure(detail: object, base_path: str) -> None:
     """Print a structured 400 from the start endpoint (invalid tree findings, or a plain message)."""
     if isinstance(detail, dict) and isinstance(detail.get("findings"), list):
-        typer.secho("Ontology validation failed:", fg=typer.colors.RED, bold=True, err=True)
+        typer.secho("Context validation failed:", fg=typer.colors.RED, bold=True, err=True)
         message = detail.get("message")
         if message:
             typer.echo(message, err=True)
@@ -283,13 +283,13 @@ def add_case(
         DEFAULT_BASE_PATH,
         "--base-path",
         envvar="CASSIS_BASE_PATH",
-        help="Repository directory the ontology is exported under (holds project.yml for the --project default).",
+        help="Repository directory the context is exported under (holds project.yml for the --project default).",
     ),
     json_output: bool = typer.Option(False, "--json", help="Print the created case as raw JSON."),
 ) -> None:
     """Add a gold test case to the project's eval suite.
 
-    Closes the loop after fixing an ontology issue: the question users were
+    Closes the loop after fixing a context issue: the question users were
     failing on becomes a gold case, so `cassis eval run` guards it from
     regressing. On an executable data source the gold SQL is run before the
     case is stored, so a case that cannot execute never enters the suite.
@@ -369,7 +369,7 @@ def list_cases(
         DEFAULT_BASE_PATH,
         "--base-path",
         envvar="CASSIS_BASE_PATH",
-        help="Repository directory the ontology is exported under (holds project.yml for the --project default).",
+        help="Repository directory the context is exported under (holds project.yml for the --project default).",
     ),
     json_output: bool = typer.Option(False, "--json", help="Print the cases as raw JSON (includes gold SQL)."),
 ) -> None:
@@ -435,13 +435,13 @@ def delete_case(
         DEFAULT_BASE_PATH,
         "--base-path",
         envvar="CASSIS_BASE_PATH",
-        help="Repository directory the ontology is exported under (holds project.yml for the --project default).",
+        help="Repository directory the context is exported under (holds project.yml for the --project default).",
     ),
 ) -> None:
     """Delete an eval case from the project's suite.
 
     For pruning a case that is stale or wrong — e.g. its gold SQL encodes a
-    definition the ontology has since changed. Exits 0 on deletion, 1 when
+    definition the context has since changed. Exits 0 on deletion, 1 when
     the case does not exist in the project, 2 on usage errors, 3 on
     transport/API errors.
     """
@@ -473,7 +473,7 @@ def delete_case(
 def run(
     path: Path = typer.Argument(
         Path("."),
-        help="Repository checkout root (the directory containing the ontology export path).",
+        help="Repository checkout root (the directory containing the context export path).",
     ),
     project_id: Optional[str] = typer.Option(
         None,
@@ -497,12 +497,12 @@ def run(
         DEFAULT_BASE_PATH,
         "--base-path",
         envvar="CASSIS_BASE_PATH",
-        help="Repository directory the ontology is exported under (the project's git-sync Path setting).",
+        help="Repository directory the context is exported under (the project's git-sync Path setting).",
     ),
     branch: Optional[str] = typer.Option(
         None,
         "--branch",
-        help="Run against an existing Cassis ontology branch by name instead of local files.",
+        help="Run against an existing Cassis context branch by name instead of local files.",
     ),
     case: Optional[List[str]] = typer.Option(
         None,
@@ -529,9 +529,9 @@ def run(
         help="Cassis webapp base URL, used for the run-details link (default: the API URL).",
     ),
 ) -> None:
-    """Run the project's eval suite against your local ontology files.
+    """Run the project's eval suite against your local context files.
 
-    Uploads the local ontology file tree and scores it in-memory — nothing is pushed or
+    Uploads the local context file tree and scores it in-memory: nothing is pushed or
     persisted in Cassis besides the eval run itself. With --branch, runs against
     an existing Cassis branch instead (no files are sent). With --case, only the
     named case(s) run — e.g. proving one fresh `add-case` in seconds instead of
@@ -585,8 +585,8 @@ def run(
         # what --branch actually takes instead of pointing at the API key.
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         typer.echo(
-            "--branch runs against an ontology branch that already exists in Cassis "
-            "(create it in the webapp, or push it with `cassis ontology push`). "
+            "--branch runs against a context branch that already exists in Cassis "
+            "(create it in the webapp, or push it with `cassis context upload`). "
             "To label a run after your local checkout's branch, use --label instead.",
             err=True,
         )
@@ -597,7 +597,7 @@ def run(
 
     run_id = str(run_record["run_id"])
     total = run_record.get("total_cases", 0)
-    ontology_label = run_record.get("ontology_label") or "unpublished ontology"
+    ontology_label = run_record.get("ontology_label") or "unpublished context"
     run_url = _run_page_url(app_url or api_url, project_id, run_id)
 
     if not wait:

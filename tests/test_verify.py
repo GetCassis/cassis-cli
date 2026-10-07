@@ -104,8 +104,8 @@ class TestVerifyCommand:
         result = runner.invoke(app, ["verify", str(repo), "--api-key", "sk-k6-test"])
 
         assert result.exit_code == 0
-        assert "==> cassis ontology fmt --check" in result.output
-        assert "==> cassis ontology check" in result.output
+        assert "==> cassis context fmt --check" in result.output
+        assert "==> cassis context check" in result.output
         assert "==> cassis eval run" in result.output
         assert "verify passed" in result.output
 
@@ -134,7 +134,7 @@ class TestVerifyCommand:
         result = runner.invoke(app, ["verify", str(repo), "--api-key", "sk-k6-test"])
 
         assert result.exit_code == 1
-        assert "run `cassis ontology fmt`" in result.output
+        assert "run `cassis context fmt`" in result.output
         assert called["check"] is False  # stopped at the first gate
 
     def test_failing_check_stops_before_eval(self, repo, monkeypatch):

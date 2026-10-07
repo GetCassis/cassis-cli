@@ -57,7 +57,7 @@ class TestOntologyUploadCommand:
         _mock_api(monkeypatch, handler)
 
         result = runner.invoke(
-            app, ["ontology", "upload", str(repo), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
+            app, ["context", "upload", str(repo), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
         )
 
         assert result.exit_code == 0
@@ -79,7 +79,7 @@ class TestOntologyUploadCommand:
         result = runner.invoke(
             app,
             [
-                "ontology",
+                "context",
                 "upload",
                 str(repo),
                 "--project",
@@ -101,7 +101,7 @@ class TestOntologyUploadCommand:
         _mock_api(monkeypatch, lambda request: httpx.Response(200, json=_success_body(1)))
 
         result = runner.invoke(
-            app, ["ontology", "upload", str(repo), "--project", PROJECT_ID, "--api-key", "sk-k6-test", "--json"]
+            app, ["context", "upload", str(repo), "--project", PROJECT_ID, "--api-key", "sk-k6-test", "--json"]
         )
 
         assert result.exit_code == 0
@@ -114,7 +114,7 @@ class TestOntologyUploadCommand:
         )
 
         result = runner.invoke(
-            app, ["ontology", "upload", str(repo), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
+            app, ["context", "upload", str(repo), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
         )
 
         assert result.exit_code == 1
@@ -124,7 +124,7 @@ class TestOntologyUploadCommand:
         _mock_api(monkeypatch, lambda request: httpx.Response(404, json={"detail": "Project not found"}))
 
         result = runner.invoke(
-            app, ["ontology", "upload", str(repo), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
+            app, ["context", "upload", str(repo), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
         )
 
         assert result.exit_code == 3
@@ -133,9 +133,7 @@ class TestOntologyUploadCommand:
     def test_invalid_key_exits_three(self, repo, monkeypatch):
         _mock_api(monkeypatch, lambda request: httpx.Response(401, json={"detail": "Invalid or expired API key"}))
 
-        result = runner.invoke(
-            app, ["ontology", "upload", str(repo), "--project", PROJECT_ID, "--api-key", "sk-k6-bad"]
-        )
+        result = runner.invoke(app, ["context", "upload", str(repo), "--project", PROJECT_ID, "--api-key", "sk-k6-bad"])
 
         assert result.exit_code == 3
         assert "invalid or expired" in result.output.lower()
@@ -147,7 +145,7 @@ class TestOntologyUploadCommand:
         _mock_api(monkeypatch, handler)
 
         result = runner.invoke(
-            app, ["ontology", "upload", str(repo), "--project", "not-a-uuid", "--api-key", "sk-k6-test"]
+            app, ["context", "upload", str(repo), "--project", "not-a-uuid", "--api-key", "sk-k6-test"]
         )
 
         assert result.exit_code == 2
@@ -155,18 +153,18 @@ class TestOntologyUploadCommand:
 
     def test_missing_project_exits_two(self, repo, monkeypatch):
         monkeypatch.delenv("CASSIS_PROJECT_ID", raising=False)
-        result = runner.invoke(app, ["ontology", "upload", str(repo), "--api-key", "sk-k6-test"])
+        result = runner.invoke(app, ["context", "upload", str(repo), "--api-key", "sk-k6-test"])
         assert result.exit_code == 2
 
     def test_missing_api_key_exits_two(self, repo, monkeypatch):
         monkeypatch.delenv("CASSIS_API_KEY", raising=False)
-        result = runner.invoke(app, ["ontology", "upload", str(repo), "--project", PROJECT_ID])
+        result = runner.invoke(app, ["context", "upload", str(repo), "--project", PROJECT_ID])
         assert result.exit_code == 2
         assert "No API key" in result.output
 
     def test_missing_ontology_dir_exits_two(self, tmp_path):
         result = runner.invoke(
-            app, ["ontology", "upload", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
+            app, ["context", "upload", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
         )
         assert result.exit_code == 2
         assert "No cassis/" in result.output
@@ -406,7 +404,7 @@ class TestProjectIdDefault:
         seen = {}
         _mock_api(monkeypatch, self._capture(seen))
 
-        result = runner.invoke(app, ["ontology", "upload", str(repo), "--api-key", "sk-k6-test"])
+        result = runner.invoke(app, ["context", "upload", str(repo), "--api-key", "sk-k6-test"])
 
         assert result.exit_code == 0, result.output
         assert seen["url"].endswith(f"/api/ci/projects/{PROJECT_ID}/ontology/import")
@@ -420,7 +418,7 @@ class TestProjectIdDefault:
         _mock_api(monkeypatch, self._capture(seen))
 
         result = runner.invoke(
-            app, ["ontology", "upload", str(repo), "--project", OTHER_PROJECT_ID, "--api-key", "sk-k6-test"]
+            app, ["context", "upload", str(repo), "--project", OTHER_PROJECT_ID, "--api-key", "sk-k6-test"]
         )
 
         assert result.exit_code == 0, result.output
@@ -431,7 +429,7 @@ class TestProjectIdDefault:
         # repo has only the legacy _project.yml (not a project.yml identity file).
         _mock_api(monkeypatch, self._capture({}))
 
-        result = runner.invoke(app, ["ontology", "upload", str(repo), "--api-key", "sk-k6-test"])
+        result = runner.invoke(app, ["context", "upload", str(repo), "--api-key", "sk-k6-test"])
 
         assert result.exit_code == 2
         assert "No project" in result.output

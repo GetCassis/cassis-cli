@@ -1,25 +1,25 @@
 # Cassis CLI
 
-Validate, test and evaluate your ontology from your terminal, then publish it. The same commands gate your pull requests in CI:
+Validate, test and evaluate your context from your terminal, then publish it. The same commands gate your pull requests in CI:
 
-- `cassis ontology check` validates the ontology files in your repository with the exact same checks as the Cassis GitHub PR check (YAML parsing, round-trip, import validation) — so you can gate merges in any CI system, not just GitHub. It then prints advisory **ontology quality warnings** for a tree that parsed — tables not assigned to any domain, joins/metrics pointing at unknown tables or columns, missing table/column descriptions (the same findings `ontology test` reports, without the agent run). In a checkout bound to a project (`project.yml`, `--project`, or `CASSIS_PROJECT_ID`), it also cross-checks the tree against the project's source schema: references to tables or columns the warehouse doesn't have print as **warnings** too — advisory only (the object may simply not be built or synced yet). Warnings never fail the check.
-- `cassis schema pull` downloads the data source's full source schema (as Cassis last introspected it) into `<base-path>/.schema.json` — a **gitignored** local snapshot (the command maintains the ignore entry) with a `pulled_at` stamp. The warehouse stays authoritative; the snapshot is a cache for offline/bulk work — e.g. a coding agent grepping table and column names during a modeling pass instead of paging through the MCP `get_source_schema` tool. Re-run to refresh.
-- `cassis ontology fmt` rewrites the ontology files in canonical form (think `black`/`gofmt` for the ontology), so hand or agent edits pass the round-trip check.
-- `cassis ontology upload` uploads the ontology files to a Cassis project (full replace) and, by default, publishes them immediately as a new version — so a merge to your main branch can go live in one CI step. It runs from a git checkout whose ontology files are committed, and the published version records that commit, so `cassis status` can tell whether a checkout matches what is live.
-- `cassis ontology pull` downloads the project's unpublished ontology into your repository checkout (full sync — stale local ontology files are pruned), so you can start editing from the current state, or bootstrap a repo that isn't git-synced (e.g. Bitbucket). Pruning only deletes files that are tracked and unmodified in git (i.e. restorable with `git checkout`); untracked or locally modified files are kept and listed, and every deleted path is printed.
-- `cassis ontology pull` and `cassis ontology fmt` also write `<base-path>/AGENTS.md`, the Cassis ontology modeling guide, into the checkout (default `cassis/AGENTS.md`) — a managed file (generated banner; the CLI overwrites local edits) so a repo-aware coding agent loads current Cassis modeling doctrine by convention. It sits inside the ontology directory but is not part of the ontology tree (which is the YAML files plus the domain Markdown files `domains/**/README.md`), so it is never uploaded, validated, or pruned. Commit it alongside your ontology changes. The guide text ships inside the CLI package, so its version tracks the **installed cassis-cli version** — upgrade the CLI (`pip install -U cassis-cli`) and re-run `fmt` to pick up doctrine updates; an unpinned `pip install cassis-cli` in CI gets them automatically. The banner stamps a doctrine version, and the CLI never *downgrades* the file: if the checkout's `AGENTS.md` was written by a newer doctrine (a newer CLI, or Cassis itself on a publish), `fmt`/`pull` leave it in place, print an upgrade notice, and `fmt --check` still passes.
-- The CLI identifies itself to the API (`User-Agent: cassis-cli/<version>`), and successful API responses advertise the newest published version — when you are behind, commands print a one-line upgrade notice on stderr (purely informational; output and exit codes are unchanged).
-- `cassis eval run` runs the project's eval suite against your local ontology files (scored in-memory — nothing is pushed to Cassis) and prints per-question results, so you can test the changes on your git branch before merging.
-- `cassis ontology test` runs individual questions through the text-to-SQL agent using your local ontology files, so you can check that a change actually works (e.g. a new column gets picked) — where `eval run` only checks for regressions on existing eval cases.
-- `cassis eval add-case` adds a gold question/SQL case to the project's eval suite — after fixing an ontology issue, add the question users were failing on so `eval run` guards it from regressing.
-- `cassis eval list-cases` and `cassis eval delete-case` maintain the suite: list the current cases with their ids, and prune one that is stale or wrong (e.g. its gold SQL encodes a definition the ontology has since changed).
-- `cassis schema plan <ddl>` (or `--warehouse` on a project connected to a warehouse) previews what a schema update would change before anything is applied: the source schema diff, the ontology changes Cassis will make (every change on a table placed in the ontology, with everything a drop takes with it) and warnings, terraform-style. `cassis schema apply <ddl>` (or `--plan <id>`) writes the resulting ontology files into the local checkout, app untouched, for review with `git diff`. `cassis schema push <ddl> [--publish]` pushes the new schema and the local ontology to the app (`--yes` in CI). The file speaks only for the schemas it contains — pass `--complete` when it is the project's complete source schema so schemas absent from it are treated as dropped. With `--warehouse` the server introspects the connected warehouse instead of parsing a file; the plan is always whole-source. `cassis schema plan <ddl> --dry-run` is the prepare-ahead variant: the plan is computed synchronously and nothing is kept in Cassis (no plan to apply or resume, the current plan untouched), so the schema snapshot for a change still in a PR can be planned against safely; `--write-checkout` writes the ontology files it would produce into the checkout, to commit alongside the schema change.
-- `cassis projects list` lists the projects your API key can reach — id (what `--project` and `CASSIS_PROJECT_ID` take), name, published ontology version, and data-source dialect — so a pipeline or agent can discover the project id from the terminal instead of fishing it out of a webapp URL.
+- `cassis context check` validates the context files in your repository with the exact same checks as the Cassis GitHub PR check (YAML parsing, round-trip, import validation), so you can gate merges in any CI system, not just GitHub. It then prints advisory **context quality warnings** for a tree that parsed: tables not assigned to any domain, joins/metrics pointing at unknown tables or columns, missing table/column descriptions (the same findings `context test` reports, without the agent run). In a checkout bound to a project (`project.yml`, `--project`, or `CASSIS_PROJECT_ID`), it also cross-checks the tree against the project's source schema: references to tables or columns the warehouse doesn't have print as **warnings** too, advisory only (the object may simply not be built or synced yet). Warnings never fail the check.
+- `cassis schema pull` downloads the data source's full source schema (as Cassis last introspected it) into `<base-path>/.schema.json`, a **gitignored** local snapshot (the command maintains the ignore entry) with a `pulled_at` stamp. The warehouse stays authoritative; the snapshot is a cache for offline/bulk work, e.g. a coding agent grepping table and column names during a modeling pass instead of paging through the MCP `get_source_schema` tool. Re-run to refresh.
+- `cassis context fmt` rewrites the context files in canonical form (think `black`/`gofmt` for your context), so hand or agent edits pass the round-trip check.
+- `cassis context upload` uploads the context files to a Cassis project (full replace) and, by default, publishes them immediately as a new version, so a merge to your main branch can go live in one CI step. It runs from a git checkout whose context files are committed, and the published version records that commit, so `cassis status` can tell whether a checkout matches what is live.
+- `cassis context pull` downloads the project's unpublished context into your repository checkout (full sync: stale local context files are pruned), so you can start editing from the current state, or bootstrap a repo that isn't git-synced (e.g. Bitbucket). Pruning only deletes files that are tracked and unmodified in git (i.e. restorable with `git checkout`); untracked or locally modified files are kept and listed, and every deleted path is printed.
+- `cassis context pull` and `cassis context fmt` also write `<base-path>/AGENTS.md`, the Cassis context design guide, into the checkout (default `cassis/AGENTS.md`). It is a managed file (generated banner; the CLI overwrites local edits) so a repo-aware coding agent loads current Cassis modeling doctrine by convention. It sits inside the context directory but is not part of the context tree (which is the YAML files plus the domain Markdown files `domains/**/README.md`), so it is never uploaded, validated, or pruned. Commit it alongside your context changes. The guide text ships inside the CLI package, so its version tracks the **installed cassis-cli version**: upgrade the CLI (`pip install -U cassis-cli`) and re-run `fmt` to pick up doctrine updates; an unpinned `pip install cassis-cli` in CI gets them automatically. The banner stamps a doctrine version, and the CLI never *downgrades* the file: if the checkout's `AGENTS.md` was written by a newer doctrine (a newer CLI, or Cassis itself on a publish), `fmt`/`pull` leave it in place, print an upgrade notice, and `fmt --check` still passes.
+- The CLI identifies itself to the API (`User-Agent: cassis-cli/<version>`), and successful API responses advertise the newest published version. When you are behind, commands print a one-line upgrade notice on stderr (purely informational; output and exit codes are unchanged).
+- `cassis eval run` runs the project's eval suite against your local context files (scored in-memory, nothing is pushed to Cassis) and prints per-question results, so you can test the changes on your git branch before merging.
+- `cassis context test` runs individual questions through the text-to-SQL agent using your local context files, so you can check that a change actually works (e.g. a new column gets picked), where `eval run` only checks for regressions on existing eval cases.
+- `cassis eval add-case` adds a gold question/SQL case to the project's eval suite: after fixing a context issue, add the question users were failing on so `eval run` guards it from regressing.
+- `cassis eval list-cases` and `cassis eval delete-case` maintain the suite: list the current cases with their ids, and prune one that is stale or wrong (e.g. its gold SQL encodes a definition the context has since changed).
+- `cassis schema plan <ddl>` (or `--warehouse` on a project connected to a warehouse) previews what a schema update would change before anything is applied: the source schema diff, the context changes Cassis will make (every change on a table placed in the context, with everything a drop takes with it) and warnings, terraform-style. `cassis schema apply <ddl>` (or `--plan <id>`) writes the resulting context files into the local checkout, app untouched, for review with `git diff`. `cassis schema push <ddl> [--publish]` pushes the new schema and the local context to the app (`--yes` in CI). The file speaks only for the schemas it contains: pass `--complete` when it is the project's complete source schema so schemas absent from it are treated as dropped. With `--warehouse` the server introspects the connected warehouse instead of parsing a file; the plan is always whole-source. `cassis schema plan <ddl> --dry-run` is the prepare-ahead variant: the plan is computed synchronously and nothing is kept in Cassis (no plan to apply or resume, the current plan untouched), so the schema snapshot for a change still in a PR can be planned against safely; `--write-checkout` writes the context files it would produce into the checkout, to commit alongside the schema change.
+- `cassis projects list` lists the projects your API key can reach: id (what `--project` and `CASSIS_PROJECT_ID` take), name, published context version, and data-source dialect. A pipeline or agent can discover the project id from the terminal instead of fishing it out of a webapp URL.
 - DDL imports describe one schema snapshot/export file, including ordinary and materialized views; they do not replay incremental migrations. Extraction diagnostics include object names and statement locations. If extraction is incomplete, `schema plan` and `--dry-run` show the extracted inventory and exit 1; `apply`, `push`, and `--write-checkout` cannot save that result. Unknown column types are warnings when all output names are known. Plans also show object-kind, view-definition, comment, and constraint changes. `--json` preserves structured diagnostics and the server-capped inventory.
 
-- `cassis status` shows the project's published version (number, label, git commit), whether unpublished changes await publication, the git-sync binding, a schema plan waiting to be applied, and how your local git HEAD relates to the published commit (in sync / N commits ahead / diverged). `cassis status --watch` polls until the published commit matches your local HEAD — e.g. right after merging a PR whose CI publishes the ontology — instead of watching the GitHub Actions tab.
-- `cassis issues` triages the issues Cassis raised on the project — what it found wrong while answering questions (an ontology gap, missing data) — without leaving the checkout: `issues list` (filterable by status, impact, cause and ontology domain, and showing each issue's domain so you can work through one domain at a time), `issues show <id>` for the diagnosis, suggested action and the occurrences behind it, `issues evidence <id> <occurrence-id>` for what the agent actually saw, and `issues resolve` / `dismiss` / `reopen` once you've acted on it. When the fix ships through a pull request, write the `PR mention:` line `issues show` prints (`Resolves <id>`) in the PR description instead: Cassis resolves the issue when the PR merges, and `issues show` then reports how it was closed and through which PR.
-- `cassis verify` runs the full local gate in one verb — `ontology fmt --check`, `ontology check`, `eval run` — stopping at the first failure. One command in a checkout ("is this change safe to merge?"), one job in CI. `--no-eval` skips the eval suite.
+- `cassis status` shows the project's published version (number, label, git commit), whether unpublished changes await publication, the git-sync binding, a schema plan waiting to be applied, and how your local git HEAD relates to the published commit (in sync / N commits ahead / diverged). `cassis status --watch` polls until the published commit matches your local HEAD (e.g. right after merging a PR whose CI publishes the context) instead of watching the GitHub Actions tab.
+- `cassis issues` triages the issues Cassis raised on the project (what it found wrong while answering questions: a context gap, missing data) without leaving the checkout: `issues list` (filterable by status, impact, cause and context domain, and showing each issue's domain so you can work through one domain at a time), `issues show <id>` for the diagnosis, suggested action and the occurrences behind it, `issues evidence <id> <occurrence-id>` for what the agent actually saw, and `issues resolve` / `dismiss` / `reopen` once you've acted on it. When the fix ships through a pull request, write the `PR mention:` line `issues show` prints (`Resolves <id>`) in the PR description instead: Cassis resolves the issue when the PR merges, and `issues show` then reports how it was closed and through which PR.
+- `cassis verify` runs the full local gate in one verb (`context fmt --check`, `context check`, `eval run`), stopping at the first failure. One command in a checkout ("is this change safe to merge?"), one job in CI. `--no-eval` skips the eval suite.
 
 ## Install
 
@@ -27,60 +27,60 @@ Validate, test and evaluate your ontology from your terminal, then publish it. T
 pip install cassis-cli
 ```
 
-## Ontology file format
+## Context file format
 
-The ontology tree under `<base-path>` (default `cassis/`) is:
+The context tree under `<base-path>` (default `cassis/`) is:
 
-- **Project identity** — `project.yml`: the Cassis project id and format version. Written by `pull` and by server-side publish (the contexts that know the id); a local `fmt` won't create it.
-- **Domains** — Markdown files: every domain is the `README.md` of its folder — `domains/README.md` for the root, `domains/<path>/README.md` for each sub-domain. Each has a small YAML frontmatter block (`type`, `title`, `description`) and a Markdown body carrying the domain's `context_md`; a generated section at the bottom links the domain's tables and metrics (kept current by `fmt`/`pull` — edit your prose above it, and the PR check fails if the links are stale, so re-run `fmt`). The layout is a Cassis profile inspired by [OKF](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf): the files render on GitHub and read in any Markdown editor, but Cassis validates them strictly (unknown keys are flagged, not preserved).
-- **Tables, joins, metrics** — YAML, unchanged: `tables/<schema>/<table>.yml`, `joins.yml`, `metrics/<name>.yml`.
+- **Project identity**: `project.yml`, the Cassis project id and format version. Written by `pull` and by server-side publish (the places that know the id); a local `fmt` won't create it.
+- **Domains**: Markdown files. Every domain is the `README.md` of its folder: `domains/README.md` for the root, `domains/<path>/README.md` for each sub-domain. Each has a small YAML frontmatter block (`type`, `title`, `description`) and a Markdown body carrying the domain's `context_md`; a generated section at the bottom links the domain's tables and metrics (kept current by `fmt`/`pull`: edit your prose above it, and the PR check fails if the links are stale, so re-run `fmt`). The layout is a Cassis profile inspired by [OKF](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf): the files render on GitHub and read in any Markdown editor, but Cassis validates them strictly (unknown keys are flagged, not preserved).
+- **Tables, joins, metrics**: YAML, unchanged: `tables/<schema>/<table>.yml`, `joins.yml`, `metrics/<name>.yml`.
 
-**Migrating an existing repo** (domains were YAML `_project.yml` / `_domain.yml` before cassis-cli 1.1.0): upgrade and run `cassis ontology fmt` (or `cassis ontology pull` if you have no local edits) — it rewrites the domain files to Markdown and removes the old ones. Review the diff and commit. Cassis reads the old YAML domain files too, so an un-migrated repo keeps working until you convert it. **Uploading requires cassis-cli ≥ 1.1.0** — the server rejects an older CLI (which would drop the Markdown domain files) with a clear upgrade error.
+**Migrating an existing repo** (domains were YAML `_project.yml` / `_domain.yml` before cassis-cli 1.1.0): upgrade and run `cassis context fmt` (or `cassis context pull` if you have no local edits). It rewrites the domain files to Markdown and removes the old ones. Review the diff and commit. Cassis reads the old YAML domain files too, so an un-migrated repo keeps working until you convert it. **Uploading requires cassis-cli ≥ 1.1.0**: the server rejects an older CLI (which would drop the Markdown domain files) with a clear upgrade error.
 
 ## Setup
 
 1. Create an API key in Cassis under **Organization settings → API keys** (keys start with `sk-k6-`).
 2. Store it as a CI secret and expose it as `CASSIS_API_KEY`.
-3. For `pull`, `upload`, `schema pull`, `eval run`, `ontology test`, the `eval` case commands (`add-case`, `list-cases`, `delete-case`), and the `issues` commands: the project ID (UUID) is taken from `<base-path>/project.yml` in the checkout (written by `pull` and by publishing) — so once a repo is pulled you don't need to pass it. To override, or before the first pull, set `CASSIS_PROJECT_ID` or pass `--project` (find the UUID with `cassis projects list`, or in the project's URL). `ontology check` uses the same resolution but treats it as optional: unbound checkouts get the project-less validation (no schema reference warnings).
+3. For `pull`, `upload`, `schema pull`, `eval run`, `context test`, the `eval` case commands (`add-case`, `list-cases`, `delete-case`), and the `issues` commands: the project ID (UUID) is taken from `<base-path>/project.yml` in the checkout (written by `pull` and by publishing), so once a repo is pulled you don't need to pass it. To override, or before the first pull, set `CASSIS_PROJECT_ID` or pass `--project` (find the UUID with `cassis projects list`, or in the project's URL). `context check` uses the same resolution but treats it as optional: unbound checkouts get the project-less validation (no schema reference warnings).
 
 ## Usage
 
 ```bash
-# From the root of a repository synced with Cassis (contains the ontology export directory, cassis/ by default):
-cassis ontology check
+# From the root of a repository synced with Cassis (contains the context export directory, cassis/ by default):
+cassis context check
 
 # Or point at the checkout explicitly:
-cassis ontology check /path/to/checkout
+cassis context check /path/to/checkout
 
-# Download the project's unpublished ontology into the checkout (full sync;
-# review with git diff — untracked/modified files are never deleted, and
+# Download the project's unpublished context into the checkout (full sync;
+# review with git diff. Untracked/modified files are never deleted, and
 # --no-prune keeps even the tracked stale files it would otherwise delete):
-cassis ontology pull --project 019f0000-0000-7000-8000-000000000000
+cassis context pull --project 019f0000-0000-7000-8000-000000000000
 
-# Upload the ontology to a project and publish it immediately (commit the
-# changes under cassis/ first: uploads refuse uncommitted ontology files):
-cassis ontology upload --project 019f0000-0000-7000-8000-000000000000
+# Upload the context to a project and publish it immediately (commit the
+# changes under cassis/ first: uploads refuse uncommitted context files):
+cassis context upload --project 019f0000-0000-7000-8000-000000000000
 
-# Upload without publishing (the tree becomes the project's unpublished ontology, to review in Cassis):
-cassis ontology upload --project ... --no-publish
+# Upload without publishing (the tree becomes the project's unpublished context, to review in Cassis):
+cassis context upload --project ... --no-publish
 
 # Label the published version:
-cassis ontology upload --project ... --label "release 1.2"
+cassis context upload --project ... --label "release 1.2"
 
 # Machine-readable output:
-cassis ontology check --json
-cassis ontology pull --project ... --json
-cassis ontology upload --project ... --json
+cassis context check --json
+cassis context pull --project ... --json
+cassis context upload --project ... --json
 cassis eval run --project ... --json
 
-# Run the eval suite against the local ontology files and wait for results
+# Run the eval suite against the local context files and wait for results
 # (the run is labelled with your git branch name in the Evals page):
 cassis eval run --project ...
 
-# Run against an existing Cassis ontology branch, or the unpublished ontology:
+# Run against an existing Cassis context branch, or the unpublished context:
 cassis eval run --project ... --branch feature-x
 
-# Run only specific cases (repeatable) — e.g. prove a fresh add-case in seconds:
+# Run only specific cases (repeatable), e.g. prove a fresh add-case in seconds:
 cassis eval run --project ... --case 019f0000-0000-7000-8000-0000000000ca
 
 # Start the run and return immediately (poll in the webapp):
@@ -90,16 +90,16 @@ cassis eval run --project ... --no-wait
 Under each failed case `eval run` prints what is needed to diagnose it: the SQL the agent
 generated, the gold SQL it was compared against, how many rows each side returned, any concepts
 the agent found missing, and the judge's reasoning when a judge graded the case. The expected and
-actual row *values* are deliberately not printed — they are in `--json` and in the Cassis app.
+actual row *values* are deliberately not printed: they are in `--json` and in the Cassis app.
 Note that the **generated SQL is printed as the agent wrote it**, and an agent that read your data
 while planning can carry a value it saw into a literal in that SQL. Treat `eval run` output as
 carrying the same sensitivity as the queries themselves when you decide who can read your CI logs.
 
 ```bash
 
-# Probe questions through the text-to-SQL agent using the local ontology files
+# Probe questions through the text-to-SQL agent using the local context files
 # (one full agent run per question, expect ~30-90s each; repeat -q for several):
-cassis ontology test --project ... -q "How much was refunded last month?" -q "Net revenue in Q1?"
+cassis context test --project ... -q "How much was refunded last month?" -q "Net revenue in Q1?"
 
 # Add a gold case to the eval suite (rejected if the exact question already exists):
 cassis eval add-case --project ... -q "How much was refunded last month?" \
@@ -120,7 +120,7 @@ cassis schema pull
 cassis schema plan schema.sql --complete
 cassis schema apply schema.sql --complete      # writes cassis/ locally
 git add cassis && git commit -m "Apply schema update"  # push needs the tree committed
-cassis schema push schema.sql --complete --yes  # schema + ontology to the app
+cassis schema push schema.sql --complete --yes  # schema + context to the app
 cassis schema plan --warehouse                   # warehouse-connected projects: introspect instead
 cassis schema plan future.sql --dry-run --write-checkout  # plan a not-yet-deployed DDL, keep nothing server-side
 
@@ -137,7 +137,7 @@ cassis issues list                 # open issues by default
 cassis issues list --status all    # include resolved and dismissed issues
 cassis issues show 019f0000-0000-7000-8000-0000000000e1
 
-# Work one ontology domain at a time (nested domains included):
+# Work one context domain at a time (nested domains included):
 cassis issues list --domain sales
 
 # Read what the agent saw for one occurrence (ids from `issues show`):
@@ -162,16 +162,16 @@ Configuration (flags take precedence over env vars):
 
 | Flag        | Env var          | Default                     |
 | ----------- | ---------------- | --------------------------- |
-| `--api-key` | `CASSIS_API_KEY` | — (required)                |
+| `--api-key` | `CASSIS_API_KEY` | none (required)             |
 | `--api-url` | `CASSIS_API_URL` | `https://app.getcassis.com` |
-| `--base-path` | `CASSIS_BASE_PATH` | `cassis` — must match the project's git-sync "Path" setting |
+| `--base-path` | `CASSIS_BASE_PATH` | `cassis`, must match the project's git-sync "Path" setting |
 | `--project` (check, pull, upload, schema pull, eval run, eval add-case, eval list-cases, eval delete-case, test, issues) | `CASSIS_PROJECT_ID` | the id in `<base-path>/project.yml` (required before the first pull; `check` alone falls back to the project-less validation when unbound) |
 
 `cassis eval run` also accepts `--case <id>` (repeatable; run only the named
 cases, ids from `eval list-cases` or `add-case`), `--label` (run label in the Evals page; defaults
 to the branch name from the CI environment or the local git checkout; rejected
 with `--branch`, whose runs are labelled with the branch name), `--wait/--no-wait`, `--poll-interval` (5 s),
-`--timeout` (30 min — the run keeps going server-side if the CLI stops waiting),
+`--timeout` (30 min; the run keeps going server-side if the CLI stops waiting),
 and Ctrl-C cancels the run (exit 130). It prints a deep link to the run's page
 in the Evals UI; `--app-url` / `CASSIS_APP_URL` overrides the link's base URL
 when the webapp is not served from the API host (defaults to `--api-url`).
@@ -179,32 +179,32 @@ when the webapp is not served from the API host (defaults to `--api-url`).
 ### Formatting
 
 ```bash
-# Rewrite the ontology files in canonical form (in place)
-cassis ontology fmt
+# Rewrite the context files in canonical form (in place)
+cassis context fmt
 
 # CI mode: fail (exit 1) if any file is not canonical, write nothing
-cassis ontology fmt --check
+cassis context fmt --check
 ```
 
-`fmt` uses the exact serializer the validation round-trip compares against, so a formatted tree cannot fail that stage. Formatting does not run import validation — `check` remains the pass/fail gate for semantic problems (dangling references, incomplete metrics).
+`fmt` uses the exact serializer the validation round-trip compares against, so a formatted tree cannot fail that stage. Formatting does not run import validation: `check` remains the pass/fail gate for semantic problems (dangling references, incomplete metrics).
 
-**Review the diff before committing**: canonical form keeps exactly the fields Cassis understands. Unknown fields (typos) are dropped — the rewrite makes them visible in `git diff` instead of losing them silently at sync time. Files with duplicate YAML keys are rejected (fix them by hand: the formatter can't know which value you meant).
+**Review the diff before committing**: canonical form keeps exactly the fields Cassis understands. Unknown fields (typos) are dropped, and the rewrite makes them visible in `git diff` instead of losing them silently at sync time. Files with duplicate YAML keys are rejected (fix them by hand: the formatter can't know which value you meant).
 
 ### Exit codes
 
 | Code | Meaning                                                                        |
 | ---- | ------------------------------------------------------------------------------ |
-| 0    | Ontology is valid (check) / pulled (pull) / uploaded (upload) / eval run completed all-passed (eval run) / every probe completed (test — whatever its outcome; probes are informational, don't gate CI on them) |
+| 0    | Context is valid (check) / pulled (pull) / uploaded (upload) / eval run completed all-passed (eval run) / every probe completed (test, whatever its outcome; probes are informational, don't gate CI on them) |
 | 1    | Validation failed (check: findings printed; upload: nothing imported; eval run: invalid tree, failed cases, or failed/cancelled run; test: invalid tree or a probe failed; add-case: duplicate question or gold SQL that does not run; delete-case: no such case in the project; issues: no such issue or occurrence in the project; issues analyze: failed or cancelled analysis run; schema plan/apply: extraction is incomplete, the plan failed (unparseable or truncated DDL), is stale or expired, the apply failed, or the project won't accept it (a plan is being applied, a DDL was given for a warehouse-connected project, or --warehouse for a DDL-only one)) |
-| 2    | Usage error (missing API key or project, no ontology directory, unreadable file, tree over the size limits, `eval run --branch` naming an ontology branch the project does not have, `upload` or `schema push` outside a git checkout or with uncommitted ontology files) |
+| 2    | Usage error (missing API key or project, no context directory, unreadable file, tree over the size limits, `eval run --branch` naming a context branch the project does not have, `upload` or `schema push` outside a git checkout or with uncommitted context files) |
 | 3    | Transport/API error (unreachable API, invalid key, inaccessible project, unexpected response), another eval run or issue analysis already active, out of credits, or `--timeout` reached |
 
 Commands that send the local tree (`check`, `fmt`, `upload`, `eval run`, `test`) accept up to
-20,000 ontology files / 100 MB total (path + content bytes) — sized for ontologies of
+20,000 context files / 100 MB total (path + content bytes), sized for a context of
 roughly 10,000 modeled tables. Beyond that the CLI fails fast with exit 2 before
 uploading anything; double-check `--base-path` if you hit it.
 
-`upload` replaces the project's entire ontology with the uploaded tree. A
+`upload` replaces the project's entire context with the uploaded tree. A
 never-published project always goes live immediately on first upload (even
 with `--no-publish`), matching imports from the Cassis app. Publishing is
 idempotent: re-uploading content identical to the published version reports
@@ -215,7 +215,7 @@ unchanged files is a no-op.
 
 ```yaml
 jobs:
-  ontology-check:
+  context-check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -223,11 +223,11 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install cassis-cli
-      - run: cassis ontology check
+      - run: cassis context check
         env:
           CASSIS_API_KEY: ${{ secrets.CASSIS_API_KEY }}
 
-  ontology-eval:
+  context-eval:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
@@ -241,7 +241,7 @@ jobs:
           CASSIS_API_KEY: ${{ secrets.CASSIS_API_KEY }}
           CASSIS_PROJECT_ID: ${{ vars.CASSIS_PROJECT_ID }}
 
-  ontology-publish:
+  context-publish:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
     steps:
@@ -250,7 +250,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install cassis-cli
-      - run: cassis ontology upload
+      - run: cassis context upload
         env:
           CASSIS_API_KEY: ${{ secrets.CASSIS_API_KEY }}
           CASSIS_PROJECT_ID: ${{ vars.CASSIS_PROJECT_ID }}
@@ -259,15 +259,15 @@ jobs:
 ### GitLab CI example
 
 ```yaml
-ontology-check:
+context-check:
   image: python:3.12-slim
   script:
     - pip install cassis-cli
-    - cassis ontology check
+    - cassis context check
   variables:
     CASSIS_API_KEY: $CASSIS_API_KEY
 
-ontology-eval:
+context-eval:
   image: python:3.12-slim
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -278,13 +278,13 @@ ontology-eval:
     CASSIS_API_KEY: $CASSIS_API_KEY
     CASSIS_PROJECT_ID: $CASSIS_PROJECT_ID
 
-ontology-publish:
+context-publish:
   image: python:3.12  # not -slim: the upload needs git to record the commit
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   script:
     - pip install cassis-cli
-    - cassis ontology upload
+    - cassis context upload
   variables:
     CASSIS_API_KEY: $CASSIS_API_KEY
     CASSIS_PROJECT_ID: $CASSIS_PROJECT_ID
@@ -303,4 +303,4 @@ requires an account.
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

@@ -15,11 +15,14 @@ from cassis_cli.verify import verify
 app = typer.Typer(
     no_args_is_help=True,
     help=(
-        "Cassis CLI: validate, test and evaluate your ontology from your terminal, "
+        "Cassis CLI: validate, test and evaluate your context from your terminal, "
         "then publish it. The same commands gate your pull requests in CI."
     ),
 )
-app.add_typer(ontology_app, name="ontology")
+app.add_typer(ontology_app, name="context")
+# Former name of the `context` group, kept working (same options, same exit
+# codes) for existing scripts and CI jobs, but hidden from --help.
+app.add_typer(ontology_app, name="ontology", hidden=True)
 app.add_typer(eval_app, name="eval")
 app.add_typer(schema_app, name="schema")
 app.add_typer(projects_app, name="projects")

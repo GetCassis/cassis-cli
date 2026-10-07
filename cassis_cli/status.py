@@ -4,7 +4,7 @@ One command answers what previously needed the webapp or the GitHub Actions
 tab: which version is published, whether it matches the local checkout, and
 whether anything is awaiting publication. `--watch` polls until the published
 version catches up with the local head (e.g. right after merging a PR whose
-CI publishes the ontology).
+CI publishes the context).
 """
 
 from __future__ import annotations
@@ -96,7 +96,7 @@ def _render(status_record: "dict[str, Any]", comparison_text: str) -> None:
         typer.echo("Schema plan: blocked by incomplete extraction (create a new plan after resolving the errors)")
     elif isinstance(schema_plan, dict) and schema_plan.get("status") == "ready":
         changes = schema_plan.get("ontology_changes")
-        changes_text = f", {changes} ontology change(s)" if changes is not None else ""
+        changes_text = f", {changes} context change(s)" if changes is not None else ""
         typer.echo(f"Schema plan: ready{changes_text} (cassis schema apply --plan {schema_plan.get('id')})")
     elif isinstance(schema_plan, dict) and schema_plan.get("status") in ("planning", "applying"):
         typer.echo(f"Schema plan: {schema_plan['status']}")
@@ -106,7 +106,7 @@ def _render(status_record: "dict[str, Any]", comparison_text: str) -> None:
 def status(
     path: Path = typer.Argument(
         Path("."),
-        help="Repository checkout root (the directory containing the ontology export path).",
+        help="Repository checkout root (the directory containing the context export path).",
     ),
     project_id: Optional[str] = typer.Option(
         None,
@@ -130,7 +130,7 @@ def status(
         DEFAULT_BASE_PATH,
         "--base-path",
         envvar="CASSIS_BASE_PATH",
-        help="Repository directory the ontology is exported under (the project's git-sync Path setting).",
+        help="Repository directory the context is exported under (the project's git-sync Path setting).",
     ),
     watch: bool = typer.Option(
         False,

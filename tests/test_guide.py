@@ -8,7 +8,7 @@ from cassis_cli.guide import DOCTRINE_VERSION, GUIDE_FILENAME, canonical_guide, 
 
 # cli/tests/test_guide.py -> repo root is three parents up.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_CANONICAL_DOC = _REPO_ROOT / "docs" / "ontology-design-guide.md"
+_CANONICAL_DOC = _REPO_ROOT / "docs" / "context-design-guide.md"
 _BUNDLED = Path(__file__).resolve().parents[1] / "cassis_cli" / "ontology_design_guide.md"
 
 
@@ -17,7 +17,7 @@ def test_bundled_guide_matches_canonical_doc():
     # The backend image doesn't ship docs/, so the CLI carries its own copy;
     # this is the openapi.json-style guard that keeps the two byte-identical.
     assert _BUNDLED.read_text(encoding="utf-8") == _CANONICAL_DOC.read_text(encoding="utf-8"), (
-        "cli/cassis_cli/ontology_design_guide.md drifted from docs/ontology-design-guide.md — "
+        "cli/cassis_cli/ontology_design_guide.md drifted from docs/context-design-guide.md: "
         "re-copy the canonical doc into the CLI package."
     )
 
@@ -27,7 +27,7 @@ def test_canonical_guide_has_banner_then_body():
     assert content.startswith("<!--")
     assert "Do NOT edit" in content.split("-->", 1)[0]
     assert f"doctrine v{DOCTRINE_VERSION}" in content.split("-->", 1)[0]
-    assert "# Cassis Ontology Design Guide" in content
+    assert "# Cassis Context Design Guide" in content
 
 
 def test_refresh_guide_creates_then_is_idempotent(tmp_path):

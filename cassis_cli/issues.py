@@ -1,9 +1,9 @@
 """`cassis issues` — triage the issues Cassis raised on the project, from the terminal.
 
-Issues are what the product found wrong while answering questions (an ontology
+Issues are what the product found wrong while answering questions (a context
 gap, missing data). Listing, reading the evidence behind an occurrence, and
 resolving or dismissing them from a checkout keeps the fix loop next to the
-ontology files instead of in the webapp; `analyze` refreshes them from the
+context files instead of in the webapp; `analyze` refreshes them from the
 conversations that arrived since the last pass, without waiting for the nightly one.
 """
 
@@ -81,7 +81,7 @@ _BASE_PATH_OPTION = typer.Option(
     DEFAULT_BASE_PATH,
     "--base-path",
     envvar="CASSIS_BASE_PATH",
-    help="Repository directory the ontology is exported under (holds project.yml for the --project default).",
+    help="Repository directory the context is exported under (holds project.yml for the --project default).",
 )
 
 
@@ -120,7 +120,7 @@ def list_issues(
     impact: Optional[str] = typer.Option(None, "--impact", help=f"Filter by impact ({', '.join(IMPACTS)})."),
     cause: Optional[str] = typer.Option(None, "--cause", help=f"Filter by cause ({', '.join(CAUSES)})."),
     domain: Optional[str] = typer.Option(
-        None, "--domain", help="Filter by ontology domain path; nested domains included."
+        None, "--domain", help="Filter by context domain path; nested domains included."
     ),
     path: Path = _PATH_OPTION,
     project_id: Optional[str] = _PROJECT_OPTION,
@@ -131,7 +131,7 @@ def list_issues(
 ) -> None:
     """List the project's issues, prioritized by impact then recurrence.
 
-    Prints each issue's id, impact, occurrence count, status, primary ontology
+    Prints each issue's id, impact, occurrence count, status, primary context
     domain (`-` when Cassis could not attach one) and title; the id is what
     `cassis issues show`, `resolve`, `dismiss` and `reopen` take. Triage one
     domain at a time with `--domain`, which covers its nested domains too.
@@ -332,7 +332,7 @@ def resolve(
     published: bool = typer.Option(
         False,
         "--published",
-        help="Confirm the fix is in the published ontology; required without an interactive terminal.",
+        help="Confirm the fix is in the published context; required without an interactive terminal.",
     ),
     issue_id: str = typer.Argument(..., help="Id of the issue to resolve (from `cassis issues list`)."),
     path: Path = _PATH_OPTION,
@@ -341,7 +341,7 @@ def resolve(
     api_url: str = _API_URL_OPTION,
     base_path: str = _BASE_PATH_OPTION,
 ) -> None:
-    """Mark an issue resolved — the ontology change that fixes it is published.
+    """Mark an issue resolved: the context change that fixes it is published.
 
     For a fix that ships through a pull request, prefer writing `Resolves <id>`
     in the PR description: Cassis resolves the issue itself when the PR
@@ -352,10 +352,10 @@ def resolve(
     if not published:
         if not sys.stdin.isatty():
             typer.secho(
-                "Use --published to confirm the fix is in the published ontology.", fg=typer.colors.RED, err=True
+                "Use --published to confirm the fix is in the published context.", fg=typer.colors.RED, err=True
             )
             raise typer.Exit(EXIT_USAGE)
-        if not typer.confirm("Is the fix already in the published ontology?"):
+        if not typer.confirm("Is the fix already in the published context?"):
             raise typer.Exit(EXIT_USAGE)
     _set_status(
         issue_id=issue_id,

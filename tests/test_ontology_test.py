@@ -48,7 +48,7 @@ def _completed_body(run_status="success"):
 
 
 def _args(repo, *extra):
-    return ["ontology", "test", str(repo), "--project", PROJECT_ID, "--api-key", "sk-k6-test", *extra]
+    return ["context", "test", str(repo), "--project", PROJECT_ID, "--api-key", "sk-k6-test", *extra]
 
 
 class TestOntologyTest:

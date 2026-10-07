@@ -1,4 +1,4 @@
-"""`cassis ontology` subcommands."""
+"""`cassis context` subcommands (also registered, hidden, as `cassis ontology`)."""
 
 from __future__ import annotations
 
@@ -34,7 +34,10 @@ from cassis_cli.common import resolve_project_id as _resolve_project_id
 from cassis_cli.common import sync_ontology_tree as _sync_ontology_tree
 from cassis_cli.guide import DOCTRINE_VERSION, GUIDE_FILENAME, guide_status, refresh_guide
 
-app = typer.Typer(no_args_is_help=True, help="Ontology commands.")
+app = typer.Typer(
+    no_args_is_help=True,
+    help="Work on your context files: check, format and test them, pull from and upload to a Cassis project.",
+)
 
 
 def _warn_newer_guide(base_path: str) -> None:
@@ -55,7 +58,7 @@ def _warn_newer_guide(base_path: str) -> None:
 def check(
     path: Path = typer.Argument(
         Path("."),
-        help="Repository checkout root (the directory containing the ontology export path).",
+        help="Repository checkout root (the directory containing the context export path).",
     ),
     project_id: Optional[str] = typer.Option(
         None,
@@ -79,11 +82,11 @@ def check(
         DEFAULT_BASE_PATH,
         "--base-path",
         envvar="CASSIS_BASE_PATH",
-        help="Repository directory the ontology is exported under (the project's git-sync Path setting).",
+        help="Repository directory the context is exported under (the project's git-sync Path setting).",
     ),
     json_output: bool = typer.Option(False, "--json", help="Print the raw JSON response."),
 ) -> None:
-    """Validate the ontology files in a repository checkout.
+    """Validate the context files in a repository checkout.
 
     Runs the same checks as the Cassis GitHub PR check (YAML parsing,
     round-trip, import validation), then prints advisory quality warnings
@@ -103,7 +106,7 @@ def check(
     project_id = _resolve_project_id(project_id, path / base_path, optional=True, quiet=json_output)
     if not project_id and not json_output:
         typer.secho(
-            "No project binding — schema reference checks skipped (bind with `cassis ontology pull` or --project).",
+            "No project binding: schema reference checks skipped (bind with `cassis context pull` or --project).",
             fg=typer.colors.CYAN,
             err=True,
         )
@@ -153,9 +156,9 @@ def check(
         for warning in ref_warnings:
             typer.secho(f"  {warning.get('message', '')}", fg=typer.colors.YELLOW)
     if audit_warnings and not json_output:
-        # Same wording as `ontology test` so the two commands read alike.
+        # Same wording as `context test` so the two commands read alike.
         typer.secho(
-            f"{len(audit_warnings)} ontology quality warning(s) — advisory, never fail the check:",
+            f"{len(audit_warnings)} context quality warning(s), advisory, never fail the check:",
             fg=typer.colors.YELLOW,
             bold=True,
         )
@@ -169,7 +172,7 @@ def check(
 def pull(
     path: Path = typer.Argument(
         Path("."),
-        help="Repository checkout root (the directory containing the ontology export path).",
+        help="Repository checkout root (the directory containing the context export path).",
     ),
     project_id: Optional[str] = typer.Option(
         None,
@@ -193,23 +196,23 @@ def pull(
         DEFAULT_BASE_PATH,
         "--base-path",
         envvar="CASSIS_BASE_PATH",
-        help="Repository directory the ontology is exported under (the project's git-sync Path setting).",
+        help="Repository directory the context is exported under (the project's git-sync Path setting).",
     ),
     prune: bool = typer.Option(
         True,
         "--prune/--no-prune",
         help=(
-            "Delete local ontology files that no longer exist in the project's ontology "
+            "Delete local context files that no longer exist in the project's context "
             "(default: prune). Only files that are tracked and unmodified in git are "
             "deleted; untracked or locally modified files are always kept and reported."
         ),
     ),
     json_output: bool = typer.Option(False, "--json", help="Print a JSON summary of written/deleted files."),
 ) -> None:
-    """Download the project's unpublished ontology into a repository checkout.
+    """Download the project's unpublished context into a repository checkout.
 
-    Writes the ontology tree under the export path (full sync: files are
-    overwritten and, unless --no-prune, stale local ontology files are deleted,
+    Writes the context tree under the export path (full sync: files are
+    overwritten and, unless --no-prune, stale local context files are deleted,
     so the checkout ends up matching the project exactly). Pruning never touches
     files git could not restore: untracked or locally modified files are kept
     and listed, and every deleted path is named. Review the changes with
@@ -235,7 +238,7 @@ def pull(
     ontology_dir = (path / Path(base_path)).resolve()
 
     def announce_deletions(to_delete: "list[str]") -> None:
-        typer.echo(f"Deleting {len(to_delete)} stale ontology file(s):")
+        typer.echo(f"Deleting {len(to_delete)} stale context file(s):")
         for rel in to_delete:
             typer.echo(f"  {base_path}/{rel}")
 
@@ -271,7 +274,7 @@ def pull(
         typer.secho(f"{summary}.", fg=typer.colors.GREEN)
         if kept:
             typer.secho(
-                f"Kept {len(kept)} local file(s) not in the project ontology "
+                f"Kept {len(kept)} local file(s) not in the project context "
                 "(only files tracked and unmodified in git are pruned):",
                 fg=typer.colors.YELLOW,
             )
@@ -295,7 +298,7 @@ def pull(
 def upload(
     path: Path = typer.Argument(
         Path("."),
-        help="Repository checkout root (the directory containing the ontology export path).",
+        help="Repository checkout root (the directory containing the context export path).",
     ),
     project_id: Optional[str] = typer.Option(
         None,
@@ -319,21 +322,21 @@ def upload(
         DEFAULT_BASE_PATH,
         "--base-path",
         envvar="CASSIS_BASE_PATH",
-        help="Repository directory the ontology is exported under (the project's git-sync Path setting).",
+        help="Repository directory the context is exported under (the project's git-sync Path setting).",
     ),
     publish: bool = typer.Option(
         True,
         "--publish/--no-publish",
-        help="Publish the uploaded ontology immediately as a new version (default: publish).",
+        help="Publish the uploaded context immediately as a new version (default: publish).",
     ),
     label: Optional[str] = typer.Option(None, "--label", help="Label for the published version."),
     json_output: bool = typer.Option(False, "--json", help="Print the raw JSON response."),
 ) -> None:
-    """Upload the ontology files in a repository checkout to a Cassis project.
+    """Upload the context files in a repository checkout to a Cassis project.
 
-    Replaces the project's unpublished ontology with the local tree (full
+    Replaces the project's unpublished context with the local tree (full
     replace) and, unless --no-publish is passed, publishes it immediately as a
-    new version. The checkout must be a git repository whose ontology files
+    new version. The checkout must be a git repository whose context files
     match HEAD: the published version records that commit. Exits 0 on success,
     1 when the tree fails validation, 2 on usage errors (including uncommitted
     changes under the base path), 3 on transport/API errors.
@@ -357,7 +360,7 @@ def upload(
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(EXIT_TRANSPORT) from exc
     except UploadValidationError as exc:
-        typer.secho("Ontology upload rejected:", fg=typer.colors.RED, bold=True, err=True)
+        typer.secho("Context upload rejected:", fg=typer.colors.RED, bold=True, err=True)
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(EXIT_VALIDATION_FAILED) from exc
     except ApiError as exc:
@@ -373,10 +376,10 @@ def upload(
         )
         version = result.get("published_version")
         if version is not None:
-            typer.secho(f"✓ Ontology uploaded and published as v{version} ({counts}).", fg=typer.colors.GREEN)
+            typer.secho(f"✓ Context uploaded and published as v{version} ({counts}).", fg=typer.colors.GREEN)
         else:
             typer.secho(
-                f"✓ Ontology uploaded ({counts}). Not published — it is now the project's unpublished ontology.",
+                f"✓ Context uploaded ({counts}). Not published: it is now the project's unpublished context.",
                 fg=typer.colors.GREEN,
             )
     raise typer.Exit(EXIT_OK)
@@ -386,7 +389,7 @@ def upload(
 def fmt(
     path: Path = typer.Argument(
         Path("."),
-        help="Repository checkout root (the directory containing the ontology export path).",
+        help="Repository checkout root (the directory containing the context export path).",
     ),
     api_key: Optional[str] = typer.Option(
         None,
@@ -404,7 +407,7 @@ def fmt(
         DEFAULT_BASE_PATH,
         "--base-path",
         envvar="CASSIS_BASE_PATH",
-        help="Repository directory the ontology is exported under (the project's git-sync Path setting).",
+        help="Repository directory the context is exported under (the project's git-sync Path setting).",
     ),
     check_only: bool = typer.Option(
         False,
@@ -412,11 +415,11 @@ def fmt(
         help="Do not write anything; exit 1 if any file would change.",
     ),
 ) -> None:
-    """Rewrite the ontology files in canonical form (think `black` for the ontology).
+    """Rewrite the context files in canonical form (think `black` for your context).
 
     Uses the exact serializer the validation round-trip compares against, so a
-    formatted tree cannot fail that stage of `cassis ontology check` or the
-    GitHub PR check. Unknown fields are dropped by canonicalization — review
+    formatted tree cannot fail that stage of `cassis context check` or the
+    GitHub PR check. Unknown fields are dropped by canonicalization, so review
     the diff before committing; duplicate YAML keys are rejected (the
     formatter cannot know which value was intended). Exits 0 on success
     (1 with --check when changes are needed), 1 when the tree cannot be
@@ -506,7 +509,7 @@ def fmt(
 def test(
     path: Path = typer.Argument(
         Path("."),
-        help="Repository checkout root (the directory containing the ontology export path).",
+        help="Repository checkout root (the directory containing the context export path).",
     ),
     question: List[str] = typer.Option(
         ...,
@@ -536,14 +539,14 @@ def test(
         DEFAULT_BASE_PATH,
         "--base-path",
         envvar="CASSIS_BASE_PATH",
-        help="Repository directory the ontology is exported under (the project's git-sync Path setting).",
+        help="Repository directory the context is exported under (the project's git-sync Path setting).",
     ),
     json_output: bool = typer.Option(False, "--json", help="Print the raw JSON outcomes."),
 ) -> None:
-    """Run questions through the text-to-SQL agent using your local ontology files.
+    """Run questions through the text-to-SQL agent using your local context files.
 
-    The behavioral probe: checks that a change actually WORKS — e.g. that a
-    new column gets picked —
+    The behavioral probe: checks that a change actually WORKS (e.g. that a
+    new column gets picked),
     where `cassis eval run` only checks for regressions on existing gold
     cases. Each question is one full agent run (expect ~30-90s each); nothing
     is persisted server-side. The outcome is informational, not a gate: read
@@ -587,7 +590,7 @@ def test(
 def _print_test_validation_failure(detail: object, base_path: str) -> None:
     """Print a structured 400 from the test endpoint (invalid tree findings, or a plain message)."""
     if isinstance(detail, dict) and isinstance(detail.get("findings"), list):
-        typer.secho("Ontology validation failed:", fg=typer.colors.RED, bold=True, err=True)
+        typer.secho("Context validation failed:", fg=typer.colors.RED, bold=True, err=True)
         message = detail.get("message")
         if message:
             typer.echo(message, err=True)

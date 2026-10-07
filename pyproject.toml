@@ -1,11 +1,11 @@
 [project]
 name = "cassis-cli"
-version = "3.0.0"
-description = "Validate, test and evaluate your Cassis ontology from your terminal, then publish it"
+version = "3.1.0"
+description = "Validate, test and evaluate your Cassis context from your terminal, then publish it"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Cassis", email = "tech.admin@getcassis.com" }]
-keywords = ["cassis", "ontology", "cli", "ci", "text-to-sql"]
+keywords = ["cassis", "context", "context-layer", "ontology", "cli", "ci", "text-to-sql"]
 classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Environment :: Console",

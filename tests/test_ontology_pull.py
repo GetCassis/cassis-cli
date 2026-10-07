@@ -52,7 +52,7 @@ class TestOntologyPullCommand:
         _mock_api(monkeypatch, _export_handler)
 
         result = runner.invoke(
-            app, ["ontology", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
+            app, ["context", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
         )
 
         assert result.exit_code == 0, result.output
@@ -66,7 +66,7 @@ class TestOntologyPullCommand:
         _mock_api(monkeypatch, _export_handler)
 
         result = runner.invoke(
-            app, ["ontology", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
+            app, ["context", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
         )
 
         assert result.exit_code == 0, result.output
@@ -79,9 +79,9 @@ class TestOntologyPullCommand:
         # that syncs the tree must leave it in place, not prune it.
         _mock_api(monkeypatch, _export_handler)
 
-        runner.invoke(app, ["ontology", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"])
+        runner.invoke(app, ["context", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"])
         result = runner.invoke(
-            app, ["ontology", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
+            app, ["context", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
         )
 
         assert result.exit_code == 0, result.output
@@ -97,7 +97,7 @@ class TestOntologyPullCommand:
         _mock_api(monkeypatch, _export_handler)
 
         result = runner.invoke(
-            app, ["ontology", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
+            app, ["context", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
         )
 
         assert result.exit_code == 0, result.output
@@ -115,7 +115,7 @@ class TestOntologyPullCommand:
         _mock_api(monkeypatch, _export_handler)
 
         result = runner.invoke(
-            app, ["ontology", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
+            app, ["context", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
         )
 
         assert result.exit_code == 0, result.output
@@ -133,7 +133,7 @@ class TestOntologyPullCommand:
         _mock_api(monkeypatch, _export_handler)
 
         result = runner.invoke(
-            app, ["ontology", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
+            app, ["context", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
         )
 
         assert result.exit_code == 0, result.output
@@ -147,7 +147,7 @@ class TestOntologyPullCommand:
         _mock_api(monkeypatch, _export_handler)
 
         result = runner.invoke(
-            app, ["ontology", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
+            app, ["context", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
         )
 
         assert result.exit_code == 0, result.output
@@ -170,7 +170,7 @@ class TestOntologyPullCommand:
         _mock_api(monkeypatch, handler)
 
         result = runner.invoke(
-            app, ["ontology", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
+            app, ["context", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
         )
 
         assert result.exit_code == 0, result.output
@@ -187,7 +187,7 @@ class TestOntologyPullCommand:
 
         result = runner.invoke(
             app,
-            ["ontology", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test", "--no-prune"],
+            ["context", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test", "--no-prune"],
         )
 
         assert result.exit_code == 0
@@ -200,7 +200,7 @@ class TestOntologyPullCommand:
         _mock_api(monkeypatch, _export_handler)
 
         result = runner.invoke(
-            app, ["ontology", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
+            app, ["context", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
         )
 
         assert result.exit_code == 0
@@ -211,7 +211,7 @@ class TestOntologyPullCommand:
 
         result = runner.invoke(
             app,
-            ["ontology", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test", "--json"],
+            ["context", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test", "--json"],
         )
 
         assert result.exit_code == 0
@@ -229,7 +229,7 @@ class TestOntologyPullCommand:
 
         result = runner.invoke(
             app,
-            ["ontology", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test", "--json"],
+            ["context", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test", "--json"],
         )
 
         assert result.exit_code == 0
@@ -245,7 +245,7 @@ class TestOntologyPullCommand:
         _mock_api(monkeypatch, handler)
 
         result = runner.invoke(
-            app, ["ontology", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
+            app, ["context", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
         )
 
         assert result.exit_code == 3
@@ -253,17 +253,17 @@ class TestOntologyPullCommand:
 
     def test_missing_api_key_exits_two(self, tmp_path, monkeypatch):
         monkeypatch.delenv("CASSIS_API_KEY", raising=False)
-        result = runner.invoke(app, ["ontology", "pull", str(tmp_path), "--project", PROJECT_ID])
+        result = runner.invoke(app, ["context", "pull", str(tmp_path), "--project", PROJECT_ID])
         assert result.exit_code == 2
 
     def test_non_uuid_project_exits_two(self, tmp_path):
-        result = runner.invoke(app, ["ontology", "pull", str(tmp_path), "--project", "nope", "--api-key", "sk-k6-test"])
+        result = runner.invoke(app, ["context", "pull", str(tmp_path), "--project", "nope", "--api-key", "sk-k6-test"])
         assert result.exit_code == 2
 
     def test_inaccessible_project_exits_three(self, tmp_path, monkeypatch):
         _mock_api(monkeypatch, lambda r: httpx.Response(404, json={"detail": "Project not found"}))
         result = runner.invoke(
-            app, ["ontology", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
+            app, ["context", "pull", str(tmp_path), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
         )
         assert result.exit_code == 3
 

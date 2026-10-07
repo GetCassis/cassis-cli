@@ -59,7 +59,7 @@ def _maybe_print_upgrade_notice(response: httpx.Response) -> None:
     _upgrade_notice_shown = True
     print(
         f"notice: cassis-cli {latest} is available (you have {__version__}) — "
-        "run `pip install -U cassis-cli`, then `cassis ontology fmt` to refresh cassis/AGENTS.md.",
+        "run `pip install -U cassis-cli`, then `cassis context fmt` to refresh cassis/AGENTS.md.",
         file=sys.stderr,
     )
 

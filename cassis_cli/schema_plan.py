@@ -29,7 +29,7 @@ def _line(text: str, *, err: bool, mark: str | None = None, bold: bool = False) 
 
 
 def render_plan(plan: dict[str, Any], *, err: bool) -> None:
-    """Print the plan: schema diff, ontology changes with their cascade, warnings, footer."""
+    """Print the plan: schema diff, context changes with their cascade, warnings, footer."""
     document = plan.get("document") or {}
     diagnostics = document.get("diagnostics") or []
     if diagnostics:
@@ -76,7 +76,7 @@ def render_plan(plan: dict[str, Any], *, err: bool) -> None:
         elif t.get("column_count") is not None:
             suffix = f"  ({t['column_count']} columns)"
         if t.get("in_ontology"):
-            suffix += "  (in ontology)"
+            suffix += "  (in context)"
         _line(f"  {mark} {name}{suffix}", err=err, mark=mark)
         for metadata in t.get("metadata_changes") or []:
             _line(f"      ~ {metadata.get('field')}", err=err, mark="~")
@@ -101,9 +101,9 @@ def render_plan(plan: dict[str, Any], *, err: bool) -> None:
 
     changes = document.get("ontology_changes") or []
     typer.echo("", err=err)
-    _line(f"Ontology changes ({len(changes)})", err=err, bold=True)
+    _line(f"Context changes ({len(changes)})", err=err, bold=True)
     if not changes:
-        _line("  none: no table in the ontology is affected", err=err)
+        _line("  none: no table in the context is affected", err=err)
     for c in changes:
         mark, label = _OP_LABEL.get(c.get("op", ""), ("~", c.get("op", "?")))
         target = f"{c.get('schema_name')}.{c.get('table_name')}"
@@ -147,7 +147,7 @@ def render_plan(plan: dict[str, Any], *, err: bool) -> None:
     add, change, remove, cascaded = plan_counts(plan)
     typer.echo("", err=err)
     _line(
-        f"Plan: {add} to add, {change} to change, {remove} to remove in the ontology; "
+        f"Plan: {add} to add, {change} to change, {remove} to remove in the context; "
         f"{cascaded} dependent object{'s' if cascaded != 1 else ''} removed.",
         err=err,
         bold=True,
@@ -155,7 +155,7 @@ def render_plan(plan: dict[str, Any], *, err: bool) -> None:
 
 
 def plan_counts(plan: dict[str, Any]) -> tuple[int, int, int, int]:
-    """(add, change, remove, cascaded) over the ontology changes."""
+    """(add, change, remove, cascaded) over the context changes."""
     summary = plan.get("summary") or (plan.get("document") or {}).get("summary") or {}
     add = summary.get("ontology_add_column", 0)
     change = sum(summary.get(k, 0) for k in ("ontology_retype", "ontology_rename_column", "ontology_rename_table"))

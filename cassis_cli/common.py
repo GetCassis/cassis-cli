@@ -124,7 +124,7 @@ def require_committed_tree(path: Path, base_path: str, files: "dict[str, str]") 
 
     def fail(reason: str) -> "typer.Exit":
         typer.secho(
-            f"{reason} Upload the ontology from a git checkout of the repository that holds it: "
+            f"{reason} Upload the context from a git checkout of the repository that holds it: "
             "Cassis records the commit each published version comes from.",
             fg=typer.colors.RED,
             err=True,
@@ -454,7 +454,7 @@ def resolve_project_id(
             return None
         typer.secho(
             f"No project. Pass --project (or set CASSIS_PROJECT_ID), or run in a checkout whose "
-            f"{ontology_dir.name}/project.yml records it (written by `cassis ontology pull` or a publish).",
+            f"{ontology_dir.name}/project.yml records it (written by `cassis context pull` or a publish).",
             fg=typer.colors.RED,
             err=True,
         )
@@ -506,7 +506,7 @@ def collect_tree(path: Path, base_path: str) -> "tuple[dict[str, str], str]":
 
     files = collect_files(ontology_dir)
     if not files:
-        typer.secho(f"No ontology files found under {ontology_dir}.", fg=typer.colors.RED, err=True)
+        typer.secho(f"No context files found under {ontology_dir}.", fg=typer.colors.RED, err=True)
         raise typer.Exit(EXIT_USAGE)
 
     # Count path bytes too, exactly like the server's _validate_tree_files —
@@ -514,9 +514,9 @@ def collect_tree(path: Path, base_path: str) -> "tuple[dict[str, str], str]":
     total_bytes = sum(len(rel.encode()) + len(content.encode()) for rel, content in files.items())
     if len(files) > MAX_FILES or total_bytes > MAX_TOTAL_BYTES:
         typer.secho(
-            f"Ontology tree too large: {len(files)} files / {total_bytes / (1024 * 1024):.1f} MB "
+            f"Context tree too large: {len(files)} files / {total_bytes / (1024 * 1024):.1f} MB "
             f"(limits: {MAX_FILES} files / {MAX_TOTAL_BYTES // (1024 * 1024)} MB). "
-            "Check that --base-path points at the ontology directory, not a larger tree.",
+            "Check that --base-path points at the context directory, not a larger tree.",
             fg=typer.colors.RED,
             err=True,
         )

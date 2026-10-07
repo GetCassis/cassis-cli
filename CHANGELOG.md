@@ -3,6 +3,18 @@
 Versions match the releases on [PyPI](https://pypi.org/project/cassis-cli/); dates are the
 PyPI upload date.
 
+## 3.1.0 (2026-10-07)
+
+### Added
+
+- `cassis context` is the new name of the command group for your context files: `cassis context check`, `pull`, `upload`, `fmt` and `test` take the same options and return the same exit codes as before.
+
+### Changed
+
+- Help, messages and hints now say "context" instead of "ontology", in line with the Cassis app.
+- `cassis ontology` still works exactly as before, so existing scripts and CI jobs need no change, but it no longer appears in `cassis --help`. Switch to `cassis context` when convenient.
+- Bundled context design guide at doctrine v9: same modeling rules, new vocabulary. Run `cassis context fmt` to refresh `cassis/AGENTS.md` in a checkout (an older CLI leaves the newer file alone).
+
 ## 3.0.0 (2026-10-05)
 
 ### Changed

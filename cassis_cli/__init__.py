@@ -1,4 +1,4 @@
-"""Validate, test and evaluate your ontology from your terminal, then publish it.
+"""Validate, test and evaluate your context from your terminal, then publish it.
 
 The same commands gate your pull requests in CI.
 """
