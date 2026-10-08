@@ -67,6 +67,17 @@ class TestOntologyUploadCommand:
         assert "tables/public/orders.yml" in seen["body"]["files"]
         assert "published as v3" in result.output
 
+    def test_upload_that_changed_nothing_says_so(self, repo, monkeypatch):
+        _mock_api(monkeypatch, lambda request: httpx.Response(200, json=dict(_success_body(3), unchanged=True)))
+
+        result = runner.invoke(
+            app, ["ontology", "upload", str(repo), "--project", PROJECT_ID, "--api-key", "sk-k6-test"]
+        )
+
+        assert result.exit_code == 0
+        assert "No change: v3 stays published" in result.output
+        assert "published as v3" not in result.output
+
     def test_no_publish_flag_and_label(self, repo, monkeypatch):
         seen = {}
 

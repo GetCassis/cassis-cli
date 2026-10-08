@@ -164,6 +164,45 @@ class TestStatusCommand:
         assert polls["n"] == 2
         assert "matches the local HEAD" in result.output
 
+    def test_in_sync_at_the_latest_commit_of_an_unchanged_upload(self, repo, monkeypatch):
+        # An upload from _LOCAL_HEAD changed nothing: v3 still records _PUBLISHED_SHA, and _LOCAL_HEAD as latest.
+        body = dict(
+            _STATUS_BODY, published_version=dict(_STATUS_BODY["published_version"], latest_git_commit_sha=_LOCAL_HEAD)
+        )
+        _mock_api(monkeypatch, lambda request: httpx.Response(200, json=body))
+        _fake_git(monkeypatch, {("rev-parse", "HEAD"): _LOCAL_HEAD})
+
+        result = runner.invoke(app, ["status", str(repo), "--api-key", "sk-k6-test"])
+
+        assert result.exit_code == 0
+        assert f"commit {_PUBLISHED_SHA[:9]}, unchanged at {_LOCAL_HEAD[:9]}" in result.output
+        assert "in sync with the published version" in result.output
+
+    def test_watch_exits_zero_once_an_unchanged_upload_records_head(self, repo, monkeypatch):
+        polls = {"n": 0}
+
+        def handler(request):
+            polls["n"] += 1
+            latest = _LOCAL_HEAD if polls["n"] >= 2 else _PUBLISHED_SHA
+            published = dict(_STATUS_BODY["published_version"], latest_git_commit_sha=latest)
+            return httpx.Response(200, json=dict(_STATUS_BODY, published_version=published))
+
+        _mock_api(monkeypatch, handler)
+        _fake_git(
+            monkeypatch,
+            {
+                ("rev-parse", "HEAD"): _LOCAL_HEAD,
+                ("merge-base", "--is-ancestor", _PUBLISHED_SHA, "HEAD"): "",
+                ("rev-list", "--count", f"{_PUBLISHED_SHA}..HEAD"): "1",
+            },
+        )
+        monkeypatch.setattr("cassis_cli.common.time.sleep", lambda seconds: None)
+
+        result = runner.invoke(app, ["status", str(repo), "--api-key", "sk-k6-test", "--watch"])
+
+        assert result.exit_code == 0
+        assert polls["n"] == 2
+
     def test_watch_timeout_exits_three(self, repo, monkeypatch):
         _mock_api(monkeypatch, _status_handler)
         _fake_git(monkeypatch, {("rev-parse", "HEAD"): _LOCAL_HEAD})

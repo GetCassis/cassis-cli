@@ -71,12 +71,25 @@ def _local_comparison(path: Path, head: Optional[str], published_sha: Optional[s
     return f"diverged from the published commit {published_sha[:9]}", False
 
 
+def _published_commit(published: "dict[str, Any]") -> Optional[str]:
+    """The newest commit known to hold the published content.
+
+    An upload that changes nothing publishes no version but moves
+    `latest_git_commit_sha` forward. Servers older than that field only send
+    `git_commit_sha`, the commit the version was published from.
+    """
+    return published.get("latest_git_commit_sha") or published.get("git_commit_sha")
+
+
 def _render(status_record: "dict[str, Any]", comparison_text: str) -> None:
     published = status_record.get("published_version")
     if published:
         label = f" {published['label']!r}" if published.get("label") else ""
         sha = published.get("git_commit_sha")
+        latest = _published_commit(published)
         sha_text = f", commit {sha[:9]}" if sha else ""
+        if latest and latest != sha:
+            sha_text += f", unchanged at {latest[:9]}"
         typer.echo(f"Published: v{published['version']}{label} ({published.get('published_at')}{sha_text})")
     else:
         typer.echo("Published: nothing yet")
@@ -164,7 +177,7 @@ def status(
         """The status record plus the local comparison it implies: (record, comparison_text, in_sync)."""
         record = get_project_status(api_url=api_url, api_key=api_key, project_id=project_id)
         published = record.get("published_version") or {}
-        comparison_text, in_sync = _local_comparison(path, head, published.get("git_commit_sha"))
+        comparison_text, in_sync = _local_comparison(path, head, _published_commit(published))
         return record, comparison_text, in_sync
 
     def report(snapshot: "Tuple[dict[str, Any], str, bool]") -> None:
@@ -175,7 +188,7 @@ def status(
             _render(record, comparison_text)
         else:
             published = record.get("published_version") or {}
-            published_sha = published.get("git_commit_sha")
+            published_sha = _published_commit(published)
             version_text = f"v{published['version']}" if published else "nothing published"
             line = f"{version_text} (commit {published_sha[:9] if published_sha else 'none'}); local: {comparison_text}"
             if line != last_line["text"]:

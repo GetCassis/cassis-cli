@@ -3,6 +3,12 @@
 Versions match the releases on [PyPI](https://pypi.org/project/cassis-cli/); dates are the
 PyPI upload date.
 
+## 3.1.1 (2026-10-07)
+
+### Fixed
+
+- `cassis status` shows the checkout in sync after an upload that changes nothing, such as the first upload after `cassis context pull` or one from a commit that only refreshed `cassis/AGENTS.md`. `cassis status --watch` stops waiting there instead of timing out. The upload itself now says nothing changed, instead of "published as vN". This needs a server that records the commit of such an upload; with an older one, `cassis status` behaves as before.
+
 ## 3.1.0 (2026-10-07)
 
 ### Added

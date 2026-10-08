@@ -375,7 +375,13 @@ def upload(
             f"{result['join_count']} joins, {result['metric_count']} metrics"
         )
         version = result.get("published_version")
-        if version is not None:
+        if version is not None and result.get("unchanged"):
+            typer.secho(
+                f"✓ Context uploaded ({counts}). No change: v{version} stays published, "
+                f"and now records commit {head[:9]}.",
+                fg=typer.colors.GREEN,
+            )
+        elif version is not None:
             typer.secho(f"✓ Context uploaded and published as v{version} ({counts}).", fg=typer.colors.GREEN)
         else:
             typer.secho(
