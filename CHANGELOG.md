@@ -3,6 +3,12 @@
 Versions match the releases on [PyPI](https://pypi.org/project/cassis-cli/); dates are the
 PyPI upload date.
 
+## 3.2.0 (2026-10-21)
+
+### Changed
+
+- Bundled context design guide at doctrine v10: a column's stored values go in its new `enum_values` field instead of its description. Run `cassis context fmt` to refresh `cassis/AGENTS.md` in a checkout.
+
 ## 3.1.1 (2026-10-07)
 
 ### Fixed
