@@ -48,7 +48,7 @@ app = typer.Typer(no_args_is_help=True, help="Triage the project's issues.")
 
 STATUSES = ("open", "resolved", "dismissed", "all")
 DISMISS_REASONS = ("invalid", "irrelevant", "duplicate", "declined")
-IMPACTS = ("wrong_answer", "unreliable_answer", "no_answer", "inefficient")
+IMPACTS = ("wrong_answer", "at_risk", "unreliable_answer", "no_answer", "inefficient")
 CAUSES = ("ontology_gap", "missing_data")
 
 # The five options every command in this subapp takes. Shared instances: typer
@@ -129,10 +129,14 @@ def list_issues(
     base_path: str = _BASE_PATH_OPTION,
     json_output: bool = typer.Option(False, "--json", help="Print the issues as raw JSON."),
 ) -> None:
-    """List the project's issues, prioritized by impact then recurrence.
+    """List the project's issues, most important first.
 
-    Prints each issue's id, impact, occurrence count, status, primary context
-    domain (`-` when Cassis could not attach one) and title; the id is what
+    The order: editorial priority (P1, P2, P3, then unranked), then impact,
+    then reach, then how the issue was found (dbt findings first), then
+    recurrence. Prints each issue's id, impact, occurrence count, reach (the
+    chat answers that used its context tables in the last 30 days; `-` when
+    not measured, because its sources name no context table), status, primary
+    context domain (`-` when Cassis could not attach one) and title; the id is what
     `cassis issues show`, `resolve`, `dismiss` and `reopen` take. Triage one
     domain at a time with `--domain`, which covers its nested domains too.
     Exits 0 on success, 2 on usage errors, 3 on transport/API errors.
@@ -164,14 +168,29 @@ def list_issues(
         typer.echo("No issues match." if (status or impact or cause or domain) else "No issues on this project.")
         raise typer.Exit(EXIT_OK)
 
+    rows = []
     for issue in issues:
-        occurrences = issue.get("occurrence_count_cache") or 0
         # Primary domain only; --json carries the whole list.
         domains = issue.get("domains") or []
-        typer.echo(
-            f"{issue.get('id')}  {issue.get('impact')}  x{occurrences}  "
-            f"{issue.get('status')}  {domains[0] if domains else '-'}  {one_line(issue.get('title'))}"
+        # The recent chat answers that used the issue's tables; `-` (not measured) when its sources name none.
+        reach = issue.get("reach_count")
+        rows.append(
+            [
+                str(issue.get("id")),
+                str(issue.get("impact")),
+                # Always printed (conversation, eval or dbt), so every line has the same columns.
+                str(issue.get("origin") or "-"),
+                f"x{issue.get('occurrence_count_cache') or 0}",
+                f"reach {reach if isinstance(reach, int) else '-'}",
+                str(issue.get("status")),
+                domains[0] if domains else "-",
+                one_line(issue.get("title")),
+            ]
         )
+    # Every column but the title padded to its widest value in this listing, so the columns line up.
+    widths = [max(len(row[column]) for row in rows) for column in range(len(rows[0]) - 1)]
+    for row in rows:
+        typer.echo("  ".join([*(cell.ljust(width) for cell, width in zip(row, widths)), row[-1]]))
     raise typer.Exit(EXIT_OK)
 
 
@@ -214,6 +233,9 @@ def show(
         f"{issue.get('occurrence_count_cache', len(occurrences))} occurrence(s)"
     )
     _field("Domains", ", ".join(issue.get("domains") or []) or None)
+    _field("Reach", _reach(issue))
+    _field("Evidence", _evidence(issue))
+    _field("Origin", _origin(issue))
     if issue.get("resolved_via") and issue.get("status") != "open":
         ref = issue.get("resolved_ref")
         _field("Resolved via", f"{issue['resolved_via']}{f' ({ref})' if ref else ''}")
@@ -288,6 +310,44 @@ def evidence(
     for key, value in record.items():
         _field(key.replace("_", " ").capitalize(), value)
     raise typer.Exit(EXIT_OK)
+
+
+def _reach(issue: "dict[str, Any]") -> str:
+    """How many chat answers used the issue's context tables lately (counted when the issue is read)."""
+    reach = issue.get("reach_count")
+    if not isinstance(reach, int):
+        return "not measured (its sources name no context table)"
+    window = issue.get("reach_window_days")
+    when = f"in the last {window} days" if isinstance(window, int) else "lately"
+    return (
+        f"{reach} chat answer{'' if reach == 1 else 's'} used its context tables {when} (not answers shown to be wrong)"
+    )
+
+
+_EVIDENCE = {
+    "dbt_artifacts": "removed from dbt (its artifacts show the relation or column is no longer built)",
+    "review": "AI review suggestion (an automated review of the dbt change)",
+    "user_feedback": "user feedback (a source answer was rated)",
+    "eval_failure": "failed eval (a gold question the context failed)",
+    "chat_analysis": "chat analysis (the nightly review of conversations)",
+}
+
+
+def _evidence(issue: "dict[str, Any]") -> Optional[str]:
+    """The strongest evidence behind the issue, from its sources: a dbt fact or review, a rating, a failed eval, or the chat analysis."""
+    return _EVIDENCE.get(str(issue.get("detected_by")))
+
+
+def _origin(issue: "dict[str, Any]") -> Optional[str]:
+    """Where the issue was first observed; for a dbt change, the model, column, commit and PR."""
+    origin = issue.get("origin")
+    dbt = issue.get("dbt")
+    if origin != "dbt" or not isinstance(dbt, dict):
+        return origin
+    subject = f"{dbt.get('model')}.{dbt['column']}" if dbt.get("column") else str(dbt.get("model"))
+    commit = str(dbt.get("commit_sha") or "")[:12]
+    pr_title = f", PR: {dbt['pr_title']}" if dbt.get("pr_title") else ""
+    return f"dbt change on {subject} (commit {commit}{pr_title})"
 
 
 def _set_status(

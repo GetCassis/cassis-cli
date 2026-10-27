@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from typing import Any, Optional
+from urllib.parse import urlencode
 
 import httpx
 from cassis_cli import __version__
@@ -692,12 +693,64 @@ def get_eval_cases(
     api_url: str,
     api_key: str,
     project_id: str,
+    branch: Optional[str] = None,
     transport: Optional[httpx.BaseTransport] = None,
 ) -> list[dict[str, Any]]:
-    """GET /api/ci/projects/{project_id}/eval/cases and return the case list."""
+    """GET /api/ci/projects/{project_id}/eval/cases and return the case list.
+
+    With ``branch``, each case's footprint is resolved against that context
+    branch instead of main; a branch the project lacks raises
+    `EvalBranchNotFoundError` off the server's exact 404 detail.
+    """
     url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/eval/cases"
-    result = _get_eval_json(url, api_key, transport)
+    if branch is not None:
+        url += "?" + urlencode({"branch": branch})
+    try:
+        with _client(transport=transport) as client:
+            response = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+    except httpx.HTTPError as exc:
+        raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
+    if response.status_code == 401:
+        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+    if response.status_code == 404 and _is_branch_not_found(_detail_or_text(response)):
+        raise EvalBranchNotFoundError(_detail_or_text(response))
+    if response.status_code in (403, 404):
+        raise _project_scope_error(response)
+    if response.status_code >= 400:
+        raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
+    result = _parse_json_response(response, url)
     if not isinstance(result, list):
+        raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
+    return result
+
+
+def get_eval_case_history(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    case_id: str,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> dict[str, Any]:
+    """GET /api/ci/projects/{project_id}/eval/cases/{case_id}/history: the case's health and results."""
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/eval/cases/{case_id}/history"
+    try:
+        with _client(transport=transport) as client:
+            response = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+    except httpx.HTTPError as exc:
+        raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
+    if response.status_code == 401:
+        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+    # Same exact-match wire contract as `delete_eval_case`: a missing case
+    # (exit 1) is not a project-scope 404 (exit 3).
+    if response.status_code == 404 and _detail_or_text(response) == "Eval case not found":
+        raise EvalCaseNotFoundError(f"No current eval case {case_id} in this project (already deleted, or wrong id?).")
+    if response.status_code in (403, 404):
+        raise _project_scope_error(response)
+    if response.status_code >= 400:
+        raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
+    result = _parse_json_response(response, url)
+    if not isinstance(result, dict) or not all(key in result for key in ("case_id", "health", "results")):
         raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
     return result
 
@@ -1141,3 +1194,99 @@ def post_issue_analysis_cancel(
         raise _project_scope_error(response)
     if response.status_code >= 400:
         raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
+
+
+class DbtUploadRejectedError(ApiError):
+    """The server refused the dbt upload request itself (400, 413, 422).
+
+    A file misnamed, too large or not gzip, an invalid field, or a project the
+    upload can't go to (no data source): the message is the server's detail.
+    """
+
+
+_DBT_UPLOAD_NOT_FOUND = "dbt upload not found"
+
+
+def _raise_for_dbt_status(response: httpx.Response) -> None:
+    """Map the dbt routes' error statuses to the CLI's exceptions; return on 2xx."""
+    if response.status_code == 401:
+        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+    if response.status_code in (400, 413, 422):
+        raise DbtUploadRejectedError(_readable_detail(_detail_or_text(response)))
+    if response.status_code == 404:
+        detail = _detail_or_text(response)
+        if detail == _DBT_UPLOAD_NOT_FOUND:
+            raise ApiError("The dbt upload was not found in this project.")
+        if detail == "Not Found":
+            raise ServerTooOldError("This Cassis server does not accept dbt uploads yet: upgrade the server first.")
+        raise _project_scope_error(response)
+    if response.status_code == 403:
+        raise _project_scope_error(response)
+    if response.status_code >= 400:
+        raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
+
+
+def _readable_detail(detail: Any) -> str:
+    """A FastAPI validation error list as `field: message` pairs; any other detail as text."""
+    if not isinstance(detail, list):
+        return str(detail)
+    parts = []
+    for error in detail:
+        if not isinstance(error, dict):
+            parts.append(str(error))
+            continue
+        location = [str(part) for part in error.get("loc") or [] if part not in ("body", "query", "path")]
+        message = str(error.get("msg") or "invalid")
+        parts.append(f"{'.'.join(location)}: {message}" if location else message)
+    return "; ".join(parts)
+
+
+def _dbt_observation_response(response: httpx.Response, url: str) -> dict[str, Any]:
+    _raise_for_dbt_status(response)
+    result = _parse_json_response(response, url)
+    if not isinstance(result, dict) or "id" not in result or "status" not in result:
+        raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
+    return result
+
+
+def post_dbt_observation(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    files: "dict[str, bytes]",
+    fields: "dict[str, str]",
+    transport: Optional[httpx.BaseTransport] = None,
+) -> dict[str, Any]:
+    """POST gzip-compressed dbt artifacts to /api/ci/projects/{project_id}/dbt/observations.
+
+    ``files`` maps each artifact's file name (``manifest.json``, ...) to its
+    gzip bytes; ``fields`` carries the git context. Returns the PROCESSING
+    upload record.
+    """
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/dbt/observations"
+    multipart = {name[: -len(".json")]: (f"{name}.gz", content, "application/gzip") for name, content in files.items()}
+    try:
+        with _client(timeout=ONTOLOGY_TREE_TIMEOUT_SECONDS, transport=transport) as client:
+            response = client.post(url, files=multipart, data=fields, headers={"Authorization": f"Bearer {api_key}"})
+    except httpx.HTTPError as exc:
+        raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
+    return _dbt_observation_response(response, url)
+
+
+def get_dbt_observation(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    observation_id: str,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> dict[str, Any]:
+    """GET /api/ci/projects/{project_id}/dbt/observations/{observation_id} and return the upload record."""
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/dbt/observations/{observation_id}"
+    try:
+        with _client(transport=transport) as client:
+            response = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+    except httpx.HTTPError as exc:
+        raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
+    return _dbt_observation_response(response, url)

@@ -93,9 +93,10 @@ def check(
     (unassigned tables, broken joins/metrics, missing descriptions) for a
     tree that parsed. When the checkout is bound to a project
     (``project.yml``, ``--project``, or ``CASSIS_PROJECT_ID``), the tree is
-    additionally cross-checked against the project's source schema; unmatched
-    references print as warnings too. Warnings never fail the check or change
-    the exit code. Exits 0 when valid, 1 when validation fails, 2 on usage
+    additionally cross-checked against the project's source schema (unmatched
+    references print as warnings) and against its eval suite (cases whose
+    gold SQL reads tables these files lack print as warnings). Warnings never
+    fail the check or change the exit code. Exits 0 when valid, 1 when validation fails, 2 on usage
     errors, 3 on transport/API errors.
     """
     api_key = _require_api_key(api_key)
@@ -122,9 +123,11 @@ def check(
 
     warnings = result.get("warnings") or []
     ref_warnings = [w for w in warnings if w.get("stage") == "references"]
-    # Everything else is the quality audit; bucketing by "not references" keeps
-    # a warning stage this CLI predates visible instead of silently dropped.
-    audit_warnings = [w for w in warnings if w.get("stage") != "references"]
+    eval_warnings = [w for w in warnings if w.get("stage") == "evals"]
+    # Everything else is the quality audit; bucketing by "not one of the
+    # stages named here" keeps a warning stage this CLI predates visible
+    # instead of silently dropped.
+    audit_warnings = [w for w in warnings if w.get("stage") not in ("references", "evals")]
     if json_output:
         typer.echo(json.dumps(result, indent=2))
     elif result["passed"]:
@@ -139,6 +142,8 @@ def check(
                 fg=typer.colors.YELLOW,
                 err=True,
             )
+        if project_id and result.get("eval_cases_checked") and not eval_warnings:
+            typer.secho("✓ Eval cases resolve against this context.", fg=typer.colors.GREEN)
     else:
         typer.secho(result["title"], fg=typer.colors.RED, bold=True)
         typer.echo(result["summary"])
@@ -154,6 +159,15 @@ def check(
             bold=True,
         )
         for warning in ref_warnings:
+            typer.secho(f"  {warning.get('message', '')}", fg=typer.colors.YELLOW)
+    if eval_warnings and not json_output:
+        typer.secho(
+            f"{len(eval_warnings)} eval case(s) whose gold SQL does not fully resolve against this context "
+            "— advisory; they cannot be trusted to score a change until the SQL or the context is fixed:",
+            fg=typer.colors.YELLOW,
+            bold=True,
+        )
+        for warning in eval_warnings:
             typer.secho(f"  {warning.get('message', '')}", fg=typer.colors.YELLOW)
     if audit_warnings and not json_output:
         # Same wording as `context test` so the two commands read alike.

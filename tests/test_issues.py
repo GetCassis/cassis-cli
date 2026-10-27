@@ -34,6 +34,11 @@ _ISSUE = {
 }
 
 
+def _squeezed(result) -> str:
+    """The output with each run of spaces collapsed to one: `issues list` pads its columns."""
+    return "\n".join(" ".join(line.split()) for line in result.output.splitlines())
+
+
 def _mock(monkeypatch, name, original, handler):
     def patched(**kwargs):
         kwargs["transport"] = httpx.MockTransport(handler)
@@ -61,7 +66,47 @@ class TestIssuesList:
         assert result.exit_code == 0, result.output
         assert f"/api/ci/projects/{PROJECT_ID}/issues" in seen["url"]
         # The primary domain sits between the status and the title.
-        assert f"{ISSUE_ID}  wrong_answer  x3  open  sales/orders  Refunds are not modeled" in result.output
+        assert f"{ISSUE_ID} wrong_answer - x3 reach - open sales/orders Refunds are not modeled" in _squeezed(result)
+
+    def test_prints_the_reach_of_a_dbt_issue(self, monkeypatch):
+        dbt_issue = {**_ISSUE, "impact": "at_risk", "origin": "dbt", "reach_count": 12, "detected_by": "review"}
+        _mock(monkeypatch, "get_issues", get_issues, lambda request: httpx.Response(200, json=[dbt_issue]))
+
+        result = runner.invoke(app, _args("issues", "list"))
+
+        assert result.exit_code == 0, result.output
+        assert f"{ISSUE_ID} at_risk dbt x3 reach 12 open sales/orders Refunds are not modeled" in _squeezed(result)
+
+    def test_the_columns_line_up_whatever_the_impact_origin_and_reach(self, monkeypatch):
+        measured = {
+            **_ISSUE,
+            "impact": "at_risk",
+            "origin": "dbt",
+            "reach_count": 100000,
+            "occurrence_count_cache": 12000,
+            "domains": ["finance/revenue/recognition"],
+        }
+        unmeasured = {
+            **_ISSUE,
+            "id": OCCURRENCE_ID,
+            "impact": "unreliable_answer",
+            "origin": "conversation",
+            "reach_count": None,
+            "status": "dismissed",
+        }
+        _mock(monkeypatch, "get_issues", get_issues, lambda request: httpx.Response(200, json=[measured, unmeasured]))
+
+        result = runner.invoke(app, _args("issues", "list"))
+
+        assert result.exit_code == 0, result.output
+        lines = result.output.splitlines()
+        assert len({line.index("reach") for line in lines}) == 1, lines
+        assert lines[0].index("dbt") == lines[1].index("conversation")
+        assert lines[0].index("x12000") == lines[1].index("x3")
+        assert lines[0].index("open") == lines[1].index("dismissed")
+        assert lines[0].index("finance/revenue/recognition") == lines[1].index("sales/orders")
+        # Titles start in one column too, whatever the counts and the domain's length.
+        assert len({line.index("Refunds are not modeled") for line in lines}) == 1, lines
 
     def test_prints_a_dash_when_no_domain_is_attached(self, monkeypatch):
         _mock(
@@ -74,7 +119,7 @@ class TestIssuesList:
         result = runner.invoke(app, _args("issues", "list"))
 
         assert result.exit_code == 0, result.output
-        assert f"{ISSUE_ID}  wrong_answer  x3  open  -  Refunds are not modeled" in result.output
+        assert f"{ISSUE_ID} wrong_answer - x3 reach - open - Refunds are not modeled" in _squeezed(result)
 
     def test_filters_go_on_the_query_string(self, monkeypatch):
         seen = {}
@@ -145,6 +190,26 @@ class TestIssuesList:
 
 
 class TestIssuesShow:
+    def test_prints_the_reach_and_how_a_dbt_issue_was_found(self, monkeypatch):
+        body = {
+            **_ISSUE,
+            "impact": "at_risk",
+            "origin": "dbt",
+            "reach_count": 1,
+            "reach_window_days": 30,
+            "detected_by": "dbt_artifacts",
+            "occurrences": [],
+        }
+        _mock(monkeypatch, "get_issue", get_issue, lambda request: httpx.Response(200, json=body))
+
+        result = runner.invoke(app, _args("issues", "show", ISSUE_ID))
+
+        assert result.exit_code == 0, result.output
+        assert "Reach: 1 chat answer used its context tables in the last 30 days" in result.output
+        assert (
+            "Evidence: removed from dbt (its artifacts show the relation or column is no longer built)" in result.output
+        )
+
     def test_prints_detail_and_occurrences(self, monkeypatch):
         body = dict(
             _ISSUE,
@@ -159,6 +224,7 @@ class TestIssuesShow:
         assert "Add refunded_cents to public.orders." in result.output
         assert "Fix proposal: none" in result.output
         assert "Domains: sales/orders, finance" in result.output
+        assert "Reach: not measured (its sources name no context table)" in result.output
         assert f"{OCCURRENCE_ID}  Answer omitted refunds" in result.output
 
     def test_unknown_issue_exits_one(self, monkeypatch):

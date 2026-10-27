@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from datetime import datetime
 from pathlib import Path
 from typing import Any, List, Optional
 from uuid import UUID
@@ -21,6 +22,7 @@ from cassis_cli.api import (
     EvalRunActiveError,
     EvalStartValidationError,
     delete_eval_case,
+    get_eval_case_history,
     get_eval_cases,
     get_eval_run,
     get_eval_run_results,
@@ -156,8 +158,8 @@ def _print_sql(label: str, sql: str) -> None:
         typer.echo(f"        ... ({len(lines) - shown} more lines)")
 
 
-def _print_failure_evidence(r: dict[str, Any]) -> None:
-    """Print what a failed case needs to be diagnosed here, without row values.
+def _print_case_evidence(r: dict[str, Any]) -> None:
+    """Print what a case needs to be diagnosed here, without row values.
 
     Which field carries the reason depends on the status: a missing-concept
     failure explains itself through `missing_concepts`, a judge rejection
@@ -171,6 +173,10 @@ def _print_failure_evidence(r: dict[str, Any]) -> None:
 
     Every field is read with `.get`, so an older server that returns none of
     them degrades to the error line alone.
+
+    Also printed for passed cases when the run named its cases (`--case`): there
+    the point is reading the SQL a context change now produces, not only the
+    verdict.
     """
     error = r.get("error")
     if error:
@@ -206,7 +212,7 @@ def _print_failure_evidence(r: dict[str, Any]) -> None:
         _print_sql(label, str(r["gold_sql"]))
 
 
-def _print_results_table(results: list[dict[str, Any]]) -> None:
+def _print_results_table(results: list[dict[str, Any]], *, passed_evidence: bool = False) -> None:
     for r in sorted(results, key=lambda r: (r.get("status") == _PASSED, r.get("question") or "")):
         status = r.get("status", "?")
         color = _STATUS_COLORS.get(status, typer.colors.WHITE)
@@ -217,9 +223,9 @@ def _print_results_table(results: list[dict[str, Any]]) -> None:
             question = question[:67] + "..."
         line = f"  {icon} {status:<17} {duration:>5}  {question}"
         typer.secho(line, fg=color)
-        if status == _PASSED:
+        if status == _PASSED and not passed_evidence:
             continue
-        _print_failure_evidence(r)
+        _print_case_evidence(r)
 
 
 def _print_summary(run: dict[str, Any]) -> None:
@@ -237,6 +243,33 @@ def _print_summary(run: dict[str, Any]) -> None:
     if timing.get("p50") is not None:
         parts.append(f"p50 {timing['p50']:.0f}s")
     typer.echo(", ".join(parts))
+
+
+def _footprint_note(case: dict[str, Any]) -> Optional[str]:
+    """One line on why a case's gold SQL does not fully resolve against the context; None when it does.
+
+    Read with `.get` throughout: an older server returns no footprint, and a
+    project without a data source returns null.
+    """
+    footprint = case.get("footprint")
+    if not isinstance(footprint, dict) or footprint.get("state") in (None, "complete"):
+        return None
+    reasons = []
+    unresolved = footprint.get("unresolved") or []
+    if unresolved:
+        reasons.append(f"not in the context: {', '.join(str(t) for t in unresolved)}")
+    ambiguous = footprint.get("ambiguous") or {}
+    if isinstance(ambiguous, dict):
+        for name, candidates in ambiguous.items():
+            reasons.append(f"{name} matches several tables ({', '.join(str(c) for c in candidates)})")
+    shadowed = footprint.get("shadowed") or []
+    if shadowed:
+        reasons.append(f"a CTE named {', '.join(str(t) for t in shadowed)} hides a context table")
+    if footprint.get("error"):
+        reasons.append(f"gold SQL does not parse: {_shorten(str(footprint['error']), 120)}")
+    if not reasons:
+        reasons.append(str(footprint.get("state")))
+    return "; ".join(reasons)
 
 
 @app.command(name="add-case")
@@ -338,6 +371,14 @@ def add_case(
         typer.echo(json.dumps(case, indent=2))
     else:
         typer.secho(f"✓ Added eval case {case['id']}: {case['question']}", fg=typer.colors.GREEN)
+        note = _footprint_note(case)
+        if note:
+            typer.secho(
+                f"  ⚠ Its gold SQL does not fully resolve against the context ({note}); "
+                "fix the SQL or add the tables to the context before relying on it.",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
     raise typer.Exit(EXIT_OK)
 
 
@@ -371,19 +412,33 @@ def list_cases(
         envvar="CASSIS_BASE_PATH",
         help="Repository directory the context is exported under (holds project.yml for the --project default).",
     ),
-    json_output: bool = typer.Option(False, "--json", help="Print the cases as raw JSON (includes gold SQL)."),
+    branch: Optional[str] = typer.Option(
+        None,
+        "--branch",
+        help="Resolve each case's footprint against this context branch instead of the unpublished context.",
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Print the cases as raw JSON (includes gold SQL and the footprint)."
+    ),
 ) -> None:
     """List the project's eval cases: the suite `cassis eval run` scores.
 
     Prints each case's id and question (--json adds the gold SQL); the id is
-    what `cassis eval delete-case` takes. Exits 0 on success, 2 on usage
-    errors, 3 on transport/API errors.
+    what `cassis eval delete-case` and `cassis eval history` take. A case
+    whose gold SQL does not fully resolve against the context (a table the
+    context lacks, an ambiguous name, SQL that does not parse) is flagged
+    under its line, since such a case cannot be trusted to score a change.
+    Exits 0 on success, 2 on usage errors (including a --branch the project
+    does not have), 3 on transport/API errors.
     """
     api_key = require_api_key(api_key)
     project_id = resolve_project_id(project_id, path / Path(base_path))
 
     try:
-        cases = get_eval_cases(api_url=api_url, api_key=api_key, project_id=project_id)
+        cases = get_eval_cases(api_url=api_url, api_key=api_key, project_id=project_id, branch=branch)
+    except EvalBranchNotFoundError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_USAGE) from exc
     except AuthError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(EXIT_TRANSPORT) from exc
@@ -396,9 +451,185 @@ def list_cases(
     else:
         if not cases:
             typer.echo("No eval cases yet — add one with `cassis eval add-case`.")
+        flagged = 0
         for case in cases:
             question = str(case.get("question", "")).replace("\n", " ")
             typer.echo(f"{case.get('id')}  {question}")
+            note = _footprint_note(case)
+            if note:
+                flagged += 1
+                typer.secho(f"    ⚠ {note}", fg=typer.colors.YELLOW)
+        if flagged:
+            typer.secho(
+                f"{flagged} case(s) have a gold SQL that does not fully resolve against the context; "
+                "fix the SQL or add the tables to the context, or they cannot be trusted to score a change.",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
+    raise typer.Exit(EXIT_OK)
+
+
+def _format_when(iso: str) -> str:
+    """`2026-10-23 18:14` from an ISO timestamp; the raw text when it does not parse."""
+    try:
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return iso
+
+
+def _print_health(health: dict[str, Any]) -> None:
+    """The one-line account of the case, the same numbers the webapp's case page shows."""
+    total = int(health.get("total") or 0)
+    if total == 0:
+        typer.echo("No results yet — run the case with `cassis eval run --case <id>`.")
+        return
+    passed = int(health.get("passed") or 0)
+    parts = [f"pass rate {passed / total:.0%} ({passed} of {total})"]
+    verdict = health.get("verdict")
+    if verdict:
+        # The server's one word on the case, the same the webapp's case page shows.
+        parts.insert(0, str(verdict).replace("_", " "))
+    configurations = int(health.get("configurations") or 0)
+    mixed = int(health.get("mixed_configurations") or 0)
+    parts.append(f"{configurations} configuration(s)")
+    if health.get("avg_plan_seconds") is not None and health.get("avg_execution_seconds") is not None:
+        parts.append(f"plan/execution {health['avg_plan_seconds']:.1f}s / {health['avg_execution_seconds']:.1f}s avg")
+    typer.echo(" · ".join(parts))
+    if mixed:
+        typer.secho(
+            f"⚠ {mixed} configuration(s) with verdicts that differ on identical inputs: "
+            "noise the case owner can act on, not a change in the context.",
+            fg=typer.colors.YELLOW,
+        )
+    divergences = health.get("divergences") or {}
+    states = health.get("dependency_states") or {}
+    details = []
+    if divergences:
+        details.append("divergences: " + ", ".join(f"{k} ×{n}" for k, n in divergences.items()))
+    if states:
+        details.append("footprint: " + ", ".join(f"{k} {n}" for k, n in states.items()))
+    if details:
+        typer.echo(" · ".join(details))
+
+
+def _print_history_rows(results: list[dict[str, Any]]) -> None:
+    """Results grouped by the frozen configuration they ran under, newest group first."""
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for r in results:
+        key = str(r.get("run_config_key") or f"run:{r.get('run_id')}")
+        groups.setdefault(key, []).append(r)
+    for rows in groups.values():
+        first = rows[0]
+        passed = sum(1 for r in rows if r.get("status") == _PASSED)
+        header = [
+            str(first.get("run_ontology_label") or "Unknown context"),
+            str(first.get("run_model") or "?"),
+            f"Cassis {first.get('run_app_version') or '?'}",
+            f"{len(rows)} run(s)",
+            f"{passed} passed",
+        ]
+        typer.echo("")
+        typer.secho(" · ".join(header), bold=True)
+        if 0 < passed < len(rows):
+            typer.secho("  ⚠ verdicts differ on an unchanged configuration", fg=typer.colors.YELLOW)
+        for r in rows:
+            status = str(r.get("status", "?"))
+            icon = "✓" if status == _PASSED else "✗"
+            divergence = str(r.get("judge_divergence") or "-")
+            state = str(r.get("dependency_state") or "-")
+            if state == "diverged" and status == _PASSED:
+                state = "alternative path"
+            if r.get("plan_seconds") is not None and r.get("execution_seconds") is not None:
+                timing = f"{r['plan_seconds']:.1f}s / {r['execution_seconds']:.1f}s"
+            elif r.get("duration_seconds") is not None:
+                timing = f"{r['duration_seconds']:.1f}s total"
+            else:
+                timing = "-"
+            line = (
+                f"  {icon} {status:<17} {_format_when(str(r.get('created_at') or ''))}  "
+                f"{divergence:<16} {state:<17} {timing}"
+            )
+            typer.secho(line, fg=_STATUS_COLORS.get(status, typer.colors.WHITE))
+
+
+@app.command()
+def history(
+    case_id: str = typer.Argument(
+        ...,
+        help="Id of the eval case (shown by `cassis eval list-cases`).",
+    ),
+    path: Path = typer.Option(
+        Path("."),
+        "--path",
+        help="Repository checkout root (holds <base-path>/project.yml for the --project default).",
+    ),
+    project_id: Optional[str] = typer.Option(
+        None,
+        "--project",
+        envvar="CASSIS_PROJECT_ID",
+        help="Target Cassis project ID (UUID). Defaults to the id in <base-path>/project.yml.",
+    ),
+    api_key: Optional[str] = typer.Option(
+        None,
+        "--api-key",
+        envvar="CASSIS_API_KEY",
+        help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+    ),
+    api_url: str = typer.Option(
+        DEFAULT_API_URL,
+        "--api-url",
+        envvar="CASSIS_API_URL",
+        help="Cassis API base URL.",
+    ),
+    base_path: str = typer.Option(
+        DEFAULT_BASE_PATH,
+        "--base-path",
+        envvar="CASSIS_BASE_PATH",
+        help="Repository directory the context is exported under (holds project.yml for the --project default).",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print the case's health and results as raw JSON."),
+) -> None:
+    """Show how an eval case has behaved across runs.
+
+    Prints the case's health (pass rate, configurations whose repeated runs
+    disagree, average plan and execution time, divergence and footprint
+    counts), then every result grouped by the configuration it ran under
+    (context, model, Cassis version), newest first: the same account the
+    webapp's case page gives. Verdicts that differ inside one configuration
+    are noise to act on; a change across configurations is the context or
+    the model moving. Exits 0 on success, 1 when the case does not exist in
+    the project, 2 on usage errors, 3 on transport/API errors.
+    """
+    api_key = require_api_key(api_key)
+    project_id = resolve_project_id(project_id, path / Path(base_path))
+    try:
+        UUID(case_id)
+    except ValueError:
+        typer.secho(f"CASE_ID must be a UUID, got {case_id!r}.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_USAGE)
+
+    try:
+        record = get_eval_case_history(api_url=api_url, api_key=api_key, project_id=project_id, case_id=case_id)
+    except EvalCaseNotFoundError as exc:
+        typer.secho(str(exc), fg=typer.colors.YELLOW, err=True)
+        raise typer.Exit(EXIT_VALIDATION_FAILED) from exc
+    except AuthError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_TRANSPORT) from exc
+    except ApiError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_TRANSPORT) from exc
+
+    if json_output:
+        typer.echo(json.dumps(record, indent=2))
+        raise typer.Exit(EXIT_OK)
+
+    question = str(record.get("question") or "").replace("\n", " ")
+    typer.secho(f"Case {record.get('case_id')}: {question}", bold=True)
+    _print_health(record.get("health") or {})
+    results = record.get("results") or []
+    if isinstance(results, list) and results:
+        _print_history_rows(results)
     raise typer.Exit(EXIT_OK)
 
 
@@ -535,15 +766,16 @@ def run(
     persisted in Cassis besides the eval run itself. With --branch, runs against
     an existing Cassis branch instead (no files are sent). With --case, only the
     named case(s) run — e.g. proving one fresh `add-case` in seconds instead of
-    rerunning the whole suite. Exits 0 when the run completes with every case
-    passed, 1 on any failed case / failed run / invalid tree, 2 on usage
-    errors (including a --branch the project does not have), 3 on transport
-    errors or --timeout.
+    rerunning the whole suite; passed cases then print their SQL and evidence
+    too, so you can check the case passes for the right reason. Exits 0 when
+    the run completes with every case passed, 1 on any failed case / failed
+    run / invalid tree, 2 on usage errors (including a --branch the project
+    does not have), 3 on transport errors or --timeout.
 
-    Failed cases print the generated SQL as the agent wrote it. Row values are
-    never printed (they are in --json), but an agent that read your data while
-    planning can carry a value it saw into a SQL literal — so treat this output
-    as sensitive as the queries themselves.
+    Failed cases (and, with --case, passed ones) print the generated SQL as
+    the agent wrote it. Row values are never printed (they are in --json), but
+    an agent that read your data while planning can carry a value it saw into
+    a SQL literal — so treat this output as sensitive as the queries themselves.
     """
     api_key = require_api_key(api_key)
     for case_id in case or []:
@@ -637,7 +869,7 @@ def run(
         typer.echo(json.dumps({"run": final_run, "results": results, "run_url": run_url}, indent=2))
     else:
         typer.echo("")
-        _print_results_table(results)
+        _print_results_table(results, passed_evidence=bool(case))
         typer.echo("")
         _print_summary(final_run)
         typer.echo(f"View details: {run_url}")

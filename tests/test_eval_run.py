@@ -557,7 +557,7 @@ class TestFailureEvidence:
         assert "WHERE paid" in result.output
 
     def test_row_values_are_never_printed(self, repo, monkeypatch):
-        """Values ride in --json, not the CI log — see `_print_failure_evidence`."""
+        """Values ride in --json, not the CI log — see `_print_case_evidence`."""
         payload = {
             "question": "Revenue last month?",
             "status": "failed",
@@ -640,6 +640,40 @@ class TestFailureEvidence:
         _mock_api(monkeypatch, _failing_handler(payload))
         result = runner.invoke(app, ["eval", "run", str(repo), "--project", PROJECT_ID, "--api-key", "sk-k6-test"])
         assert "Generated SQL:" not in result.output
+
+    def test_passing_case_prints_evidence_when_cases_are_named(self, repo, monkeypatch):
+        # A `--case` run is checking that a context change fixes that case:
+        # the SQL behind a pass is the point, not just the verdict.
+        payload = {
+            "question": "Revenue last month?",
+            "status": "passed",
+            "generated_sql": "SELECT sum(amount) FROM orders WHERE paid",
+            "gold_sql": "SELECT sum(amount) FROM orders WHERE paid",
+            "duration_seconds": 3.0,
+            "error": None,
+            "expected_row_count": 1,
+            "actual_row_count": 1,
+            "actual_output": [{"revenue": "8675309"}],
+        }
+        _mock_api(monkeypatch, _failing_handler(payload))
+        result = runner.invoke(
+            app,
+            [
+                "eval",
+                "run",
+                str(repo),
+                "--project",
+                PROJECT_ID,
+                "--api-key",
+                "sk-k6-test",
+                "--case",
+                "019f0000-0000-7000-8000-0000000000aa",
+            ],
+        )
+        assert "Generated SQL:" in result.output
+        assert "Gold SQL:" in result.output
+        assert "Rows: 1 actual vs 1 expected" in result.output
+        assert "8675309" not in result.output
 
 
 class TestMissingBranch:

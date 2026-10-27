@@ -12,13 +12,15 @@ Validate, test and evaluate your context from your terminal, then publish it. Th
 - `cassis eval run` runs the project's eval suite against your local context files (scored in-memory, nothing is pushed to Cassis) and prints per-question results, so you can test the changes on your git branch before merging.
 - `cassis context test` runs individual questions through the text-to-SQL agent using your local context files, so you can check that a change actually works (e.g. a new column gets picked), where `eval run` only checks for regressions on existing eval cases.
 - `cassis eval add-case` adds a gold question/SQL case to the project's eval suite: after fixing a context issue, add the question users were failing on so `eval run` guards it from regressing.
-- `cassis eval list-cases` and `cassis eval delete-case` maintain the suite: list the current cases with their ids, and prune one that is stale or wrong (e.g. its gold SQL encodes a definition the context has since changed).
+- `cassis eval list-cases`, `cassis eval history` and `cassis eval delete-case` maintain the suite: list the current cases with their ids (flagging those whose gold SQL reads tables the context lacks), see how one case has behaved across runs (pass rate, whether repeated runs under one configuration disagree, divergences and timings), and prune one that is stale or wrong (e.g. its gold SQL encodes a definition the context has since changed).
 - `cassis schema plan <ddl>` (or `--warehouse` on a project connected to a warehouse) previews what a schema update would change before anything is applied: the source schema diff, the context changes Cassis will make (every change on a table placed in the context, with everything a drop takes with it) and warnings, terraform-style. `cassis schema apply <ddl>` (or `--plan <id>`) writes the resulting context files into the local checkout, app untouched, for review with `git diff`. `cassis schema push <ddl> [--publish]` pushes the new schema and the local context to the app (`--yes` in CI). The file speaks only for the schemas it contains: pass `--complete` when it is the project's complete source schema so schemas absent from it are treated as dropped. With `--warehouse` the server introspects the connected warehouse instead of parsing a file; the plan is always whole-source. `cassis schema plan <ddl> --dry-run` is the prepare-ahead variant: the plan is computed synchronously and nothing is kept in Cassis (no plan to apply or resume, the current plan untouched), so the schema snapshot for a change still in a PR can be planned against safely; `--write-checkout` writes the context files it would produce into the checkout, to commit alongside the schema change.
 - `cassis projects list` lists the projects your API key can reach: id (what `--project` and `CASSIS_PROJECT_ID` take), name, published context version, and data-source dialect. A pipeline or agent can discover the project id from the terminal instead of fishing it out of a webapp URL.
 - DDL imports describe one schema snapshot/export file, including ordinary and materialized views; they do not replay incremental migrations. Extraction diagnostics include object names and statement locations. If extraction is incomplete, `schema plan` and `--dry-run` show the extracted inventory and exit 1; `apply`, `push`, and `--write-checkout` cannot save that result. Unknown column types are warnings when all output names are known. Plans also show object-kind, view-definition, comment, and constraint changes. `--json` preserves structured diagnostics and the server-capped inventory.
 
 - `cassis status` shows the project's published version (number, label, git commit), whether unpublished changes await publication, the git-sync binding, a schema plan waiting to be applied, and how your local git HEAD relates to the published commit (in sync / N commits ahead / diverged). `cassis status --watch` polls until the published commit matches your local HEAD (e.g. right after merging a PR whose CI publishes the context) instead of watching the GitHub Actions tab.
-- `cassis issues` triages the issues Cassis raised on the project (what it found wrong while answering questions: a context gap, missing data) without leaving the checkout: `issues list` (filterable by status, impact, cause and context domain, and showing each issue's domain so you can work through one domain at a time), `issues show <id>` for the diagnosis, suggested action and the occurrences behind it, `issues evidence <id> <occurrence-id>` for what the agent actually saw, and `issues resolve` / `dismiss` / `reopen` once you've acted on it. When the fix ships through a pull request, write the `PR mention:` line `issues show` prints (`Resolves <id>`) in the PR description instead: Cassis resolves the issue when the PR merges, and `issues show` then reports how it was closed and through which PR.
+- `cassis issues` triages the issues Cassis raised on the project (what it found wrong while answering questions: a context gap, missing data) without leaving the checkout: `issues list` (filterable by status, impact, cause and context domain, and showing each issue's domain so you can work through one domain at a time; and each issue's reach, the chat answers that used its context tables in the last 30 days), `issues show <id>` for the diagnosis, suggested action, the occurrences behind it, its reach and evidence (removed from dbt, an AI review suggestion, user feedback, a failed eval, or the chat analysis), `issues evidence <id> <occurrence-id>` for what the agent actually saw, and `issues resolve` / `dismiss` / `reopen` once you've acted on it. When the fix ships through a pull request, write the `PR mention:` line `issues show` prints (`Resolves <id>`) in the PR description instead: Cassis resolves the issue when the PR merges, and `issues show` then reports how it was closed and through which PR.
+- `cassis dbt push` sends your dbt project's artifacts (`target/manifest.json`, and `catalog.json` when present) to Cassis from the dbt project's CI, with the commit they were built from. Cassis checks the files, matches each dbt model, seed, snapshot and source to a table of the project's data source, and keeps the upload as the project's dbt baseline unless a newer one is already there. The command prints how many relations matched and how many tests they declare. Cassis compares the upload with the previous baseline and files each part of the context the merged change puts in doubt as an issue (impact "at risk"); the command lists them with links. Nothing the agent answers with changes.
+- `cassis dbt check` runs the same comparison on a pull request, before the change merges: it uploads the PR's artifacts (after `dbt compile` on the production target), compares them with the baseline, and prints the context tables, columns, joins and metrics the change puts in doubt, with why it matters and the context change to make. Each finding also says its **reach**, how many chat answers used its context tables in the last 30 days, and within each section the most-reached objects print first, the order the Review page will show them in. Findings are advisory: nothing is filed, the baseline doesn't move, and the check exits 0 with or without findings.
 - `cassis verify` runs the full local gate in one verb (`context fmt --check`, `context check`, `eval run`), stopping at the first failure. One command in a checkout ("is this change safe to merge?"), one job in CI. `--no-eval` skips the eval suite.
 
 ## Install
@@ -41,7 +43,7 @@ The context tree under `<base-path>` (default `cassis/`) is:
 
 1. Create an API key in Cassis under **Organization settings → API keys** (keys start with `sk-k6-`).
 2. Store it as a CI secret and expose it as `CASSIS_API_KEY`.
-3. For `pull`, `upload`, `schema pull`, `eval run`, `context test`, the `eval` case commands (`add-case`, `list-cases`, `delete-case`), and the `issues` commands: the project ID (UUID) is taken from `<base-path>/project.yml` in the checkout (written by `pull` and by publishing), so once a repo is pulled you don't need to pass it. To override, or before the first pull, set `CASSIS_PROJECT_ID` or pass `--project` (find the UUID with `cassis projects list`, or in the project's URL). `context check` uses the same resolution but treats it as optional: unbound checkouts get the project-less validation (no schema reference warnings).
+3. For `pull`, `upload`, `schema pull`, `eval run`, `context test`, the `eval` case commands (`add-case`, `list-cases`, `history`, `delete-case`), and the `issues` commands: the project ID (UUID) is taken from `<base-path>/project.yml` in the checkout (written by `pull` and by publishing), so once a repo is pulled you don't need to pass it. To override, or before the first pull, set `CASSIS_PROJECT_ID` or pass `--project` (find the UUID with `cassis projects list`, or in the project's URL). `context check` uses the same resolution but treats it as optional: unbound checkouts get the project-less validation (no schema reference warnings).
 
 ## Usage
 
@@ -109,8 +111,12 @@ cassis eval add-case --project ... -q "How much was refunded last month?" \
 cassis eval add-case --project ... -q "How much was refunded last month?" \
   --gold-sql-file refunds.sql
 
-# List the suite's cases (id + question; --json adds the gold SQL), then prune one:
+# List the suite's cases (id + question, a warning under any case whose gold SQL
+# reads tables the context lacks; --json adds the gold SQL and the footprint;
+# --branch <name> resolves against a context branch), see how one has behaved
+# across runs, then prune one:
 cassis eval list-cases --project ...
+cassis eval history 019f0000-0000-7000-8000-0000000000ca --project ...
 cassis eval delete-case 019f0000-0000-7000-8000-0000000000ca --project ...
 
 # Pull the source schema into <base-path>/.schema.json (gitignored local snapshot):
@@ -153,6 +159,16 @@ cassis issues reopen 019f0000-0000-7000-8000-0000000000e1
 cassis status
 cassis status --watch --timeout 600
 
+# In the dbt project's CI, after a merge to the production branch: write the manifest and the
+# catalog, then send them (findings are filed as issues). On GitHub Actions, expose GITHUB_TOKEN to
+# the step so the push names the pull request that merged the commit:
+dbt docs generate --target prod
+cassis dbt push target --project ...
+
+# On a dbt pull request: compile on the production target, then list what the change puts in doubt:
+dbt compile --target prod
+cassis dbt check target --project ...
+
 # The full local gate in one verb (fmt --check, check, eval run; stops at the first failure):
 cassis verify
 cassis verify --no-eval
@@ -165,7 +181,7 @@ Configuration (flags take precedence over env vars):
 | `--api-key` | `CASSIS_API_KEY` | none (required)             |
 | `--api-url` | `CASSIS_API_URL` | `https://app.getcassis.com` |
 | `--base-path` | `CASSIS_BASE_PATH` | `cassis`, must match the project's git-sync "Path" setting |
-| `--project` (check, pull, upload, schema pull, eval run, eval add-case, eval list-cases, eval delete-case, test, issues) | `CASSIS_PROJECT_ID` | the id in `<base-path>/project.yml` (required before the first pull; `check` alone falls back to the project-less validation when unbound) |
+| `--project` (check, pull, upload, schema pull, eval run, eval add-case, eval list-cases, eval history, eval delete-case, test, issues, dbt push, dbt check) | `CASSIS_PROJECT_ID` | the id in `<base-path>/project.yml` (required before the first pull; `check` alone falls back to the project-less validation when unbound) |
 
 `cassis eval run` also accepts `--case <id>` (repeatable; run only the named
 cases, ids from `eval list-cases` or `add-case`), `--label` (run label in the Evals page; defaults
@@ -194,10 +210,10 @@ cassis context fmt --check
 
 | Code | Meaning                                                                        |
 | ---- | ------------------------------------------------------------------------------ |
-| 0    | Context is valid (check) / pulled (pull) / uploaded (upload) / eval run completed all-passed (eval run) / every probe completed (test, whatever its outcome; probes are informational, don't gate CI on them) |
-| 1    | Validation failed (check: findings printed; upload: nothing imported; eval run: invalid tree, failed cases, or failed/cancelled run; test: invalid tree or a probe failed; add-case: duplicate question or gold SQL that does not run; delete-case: no such case in the project; issues: no such issue or occurrence in the project; issues analyze: failed or cancelled analysis run; schema plan/apply: extraction is incomplete, the plan failed (unparseable or truncated DDL), is stale or expired, the apply failed, or the project won't accept it (a plan is being applied, a DDL was given for a warehouse-connected project, or --warehouse for a DDL-only one)) |
-| 2    | Usage error (missing API key or project, no context directory, unreadable file, tree over the size limits, `eval run --branch` naming a context branch the project does not have, `upload` or `schema push` outside a git checkout or with uncommitted context files) |
-| 3    | Transport/API error (unreachable API, invalid key, inaccessible project, unexpected response), another eval run or issue analysis already active, out of credits, or `--timeout` reached |
+| 0    | Context is valid (check) / pulled (pull) / uploaded (upload) / eval run completed all-passed (eval run) / every probe completed (test, whatever its outcome; probes are informational, don't gate CI on them) / dbt upload accepted, or kept behind a newer one (dbt push) / dbt upload checked, with or without findings (dbt check) |
+| 1    | Validation failed (check: findings printed; upload: nothing imported; eval run: invalid tree, failed cases, or failed/cancelled run; test: invalid tree or a probe failed; add-case: duplicate question or gold SQL that does not run; delete-case, history: no such case in the project; issues: no such issue or occurrence in the project; issues analyze: failed or cancelled analysis run; schema plan/apply: extraction is incomplete, the plan failed (unparseable or truncated DDL), is stale or expired, the apply failed, or the project won't accept it (a plan is being applied, a DDL was given for a warehouse-connected project, or --warehouse for a DDL-only one); dbt push: the upload was refused or rejected (a file is invalid, too large or from an unsupported dbt version, or no relation matches the project's data source); dbt check: the upload was refused or rejected (an invalid file, or no baseline yet: run `cassis dbt push` first)) |
+| 2    | Usage error (missing API key or project, no context directory, unreadable file, tree over the size limits, `eval run --branch` naming a context branch the project does not have, `upload` or `schema push` outside a git checkout or with uncommitted context files, `dbt push` or `dbt check` without a manifest.json, outside a git checkout without `--commit`, or with an artifact over the size limits) |
+| 3    | Transport/API error (unreachable API, invalid key, inaccessible project, unexpected response), another eval run or issue analysis already active, out of credits, `--timeout` reached, or Cassis failed on its side while processing a dbt upload (`dbt push` / `dbt check`: nothing to fix in the upload, push again) |
 
 Commands that send the local tree (`check`, `fmt`, `upload`, `eval run`, `test`) accept up to
 20,000 context files / 100 MB total (path + content bytes), sized for a context of

@@ -421,3 +421,89 @@ class TestOntologyCheckProjectScoping:
         assert result.exit_code == 0
         assert "Schema reference check skipped" in result.output
         assert "Schema references resolve" not in result.output
+
+
+class TestOntologyCheckEvalStage:
+    def test_eval_warnings_print_in_their_own_bucket(self, repo, monkeypatch):
+        (repo / "cassis" / "project.yml").write_text(f"cassis_format_version: 2\nproject_id: {_PROJECT_ID}\n")
+
+        def handler(request):
+            return httpx.Response(
+                200,
+                json={
+                    "passed": True,
+                    "file_count": 1,
+                    "title": "",
+                    "summary": "ok",
+                    "findings": [],
+                    "warnings": [
+                        {
+                            "stage": "evals",
+                            "path": None,
+                            "message": '[eval_footprint] "Archived pit stops?" (id): reads raw.archive, which the context lacks',
+                        },
+                        {"stage": "audit", "path": None, "message": "[missing_table_description] public.orders: ..."},
+                    ],
+                    "references_checked": True,
+                    "eval_cases_checked": True,
+                },
+            )
+
+        _mock_api(monkeypatch, handler)
+
+        result = runner.invoke(app, ["context", "check", str(repo), "--api-key", "sk-k6-test"])
+
+        assert result.exit_code == 0, result.output
+        assert "1 eval case(s) whose gold SQL does not fully resolve" in result.output
+        assert "raw.archive" in result.output
+        assert "1 context quality warning(s)" in result.output  # the audit bucket is unchanged
+        assert "Eval cases resolve" not in result.output
+
+    def test_clean_eval_stage_says_so(self, repo, monkeypatch):
+        (repo / "cassis" / "project.yml").write_text(f"cassis_format_version: 2\nproject_id: {_PROJECT_ID}\n")
+
+        def handler(request):
+            return httpx.Response(
+                200,
+                json={
+                    "passed": True,
+                    "file_count": 1,
+                    "title": "",
+                    "summary": "ok",
+                    "findings": [],
+                    "warnings": [],
+                    "references_checked": True,
+                    "eval_cases_checked": True,
+                },
+            )
+
+        _mock_api(monkeypatch, handler)
+
+        result = runner.invoke(app, ["context", "check", str(repo), "--api-key", "sk-k6-test"])
+
+        assert result.exit_code == 0
+        assert "✓ Eval cases resolve against this context." in result.output
+
+    def test_older_server_without_the_stage_is_silent_about_it(self, repo, monkeypatch):
+        (repo / "cassis" / "project.yml").write_text(f"cassis_format_version: 2\nproject_id: {_PROJECT_ID}\n")
+
+        def handler(request):
+            return httpx.Response(
+                200,
+                json={
+                    "passed": True,
+                    "file_count": 1,
+                    "title": "",
+                    "summary": "ok",
+                    "findings": [],
+                    "warnings": [],
+                    "references_checked": True,
+                },
+            )
+
+        _mock_api(monkeypatch, handler)
+
+        result = runner.invoke(app, ["context", "check", str(repo), "--api-key", "sk-k6-test"])
+
+        assert result.exit_code == 0
+        assert "Eval cases" not in result.output

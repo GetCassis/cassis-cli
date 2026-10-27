@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import typer
 from cassis_cli import __version__
+from cassis_cli.dbt import app as dbt_app
 from cassis_cli.eval import app as eval_app
 from cassis_cli.issues import app as issues_app
 from cassis_cli.ontology import app as ontology_app
@@ -25,6 +26,7 @@ app.add_typer(ontology_app, name="context")
 app.add_typer(ontology_app, name="ontology", hidden=True)
 app.add_typer(eval_app, name="eval")
 app.add_typer(schema_app, name="schema")
+app.add_typer(dbt_app, name="dbt")
 app.add_typer(projects_app, name="projects")
 app.add_typer(issues_app, name="issues")
 app.command()(status)
