@@ -68,6 +68,20 @@ class TestIssuesList:
         # The primary domain sits between the status and the title.
         assert f"{ISSUE_ID} wrong_answer - x3 reach - open sales/orders Refunds are not modeled" in _squeezed(result)
 
+    def test_prints_the_priority_first_and_a_dash_when_unranked(self, monkeypatch):
+        ranked = {**_ISSUE, "priority": "P1"}
+        unranked = {**_ISSUE, "id": OCCURRENCE_ID, "priority": None}
+        _mock(monkeypatch, "get_issues", get_issues, lambda request: httpx.Response(200, json=[ranked, unranked]))
+
+        result = runner.invoke(app, _args("issues", "list"))
+
+        assert result.exit_code == 0, result.output
+        squeezed = _squeezed(result).splitlines()
+        assert squeezed[0].startswith(f"P1 {ISSUE_ID} wrong_answer"), squeezed
+        assert squeezed[1].startswith(f"- {OCCURRENCE_ID} wrong_answer"), squeezed
+        lines = result.output.splitlines()
+        assert lines[0].index(ISSUE_ID) == lines[1].index(OCCURRENCE_ID), lines
+
     def test_prints_the_reach_of_a_dbt_issue(self, monkeypatch):
         dbt_issue = {**_ISSUE, "impact": "at_risk", "origin": "dbt", "reach_count": 12, "detected_by": "review"}
         _mock(monkeypatch, "get_issues", get_issues, lambda request: httpx.Response(200, json=[dbt_issue]))

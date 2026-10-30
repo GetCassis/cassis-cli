@@ -3,6 +3,19 @@
 Versions match the releases on [PyPI](https://pypi.org/project/cassis-cli/); dates are the
 PyPI upload date.
 
+## 3.4.0 (2026-10-30)
+
+### Added
+
+- `cassis eval run --repeat N` (2 to 5) runs every case N times on the same context and model as one diagnostic run, then prints how the attempts compare per case instead of the per-case list: how many cases passed every attempt, failed every attempt or flipped, and for each flipping case the attempts that passed, how many distinct SQLs the agent wrote and the cause (`generation`, `judge`, `both` or `unattributed`). A repeat run opens no issue and is not the run the webapp shows before publishing. It exits 1 only when a case failed every attempt: a case that flipped is the noise being measured, not a failure. `--json` adds the comparison under `comparison`. An older server ignores the option; the command then says so and runs each case once.
+- `cassis eval compare <run-id>` prints the same comparison for a run started earlier, `--json` the server's record as is. Exits 3 on a server too old to compare runs.
+- `cassis eval add-case` says the new case is being checked (three attempts in the background), and `cassis eval list-cases` flags a case whose check found it flaky (the attempts disagree) or failing (none passed), or that is still being checked. `--json` carries the check under `entry_check`. Older servers return none and the commands print as before.
+
+### Fixed
+
+- `cassis issues list` prints each issue's priority (`P1`, `P2`, `P3`, or `-` when unranked) as its first column: the list was already sorted by it but never showed it. The command's help also lists every column it prints, the origin included.
+- The commands that wait on Cassis print a sub-second `--timeout` as given (`Timed out after 0.5s`) instead of rounding it to `0s`, and the help of `cassis dbt push` and `cassis dbt check` says that a timeout exits 3, like a transport error.
+
 ## 3.3.0 (2026-10-27)
 
 ### Added

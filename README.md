@@ -11,7 +11,8 @@ Validate, test and evaluate your context from your terminal, then publish it. Th
 - The CLI identifies itself to the API (`User-Agent: cassis-cli/<version>`), and successful API responses advertise the newest published version. When you are behind, commands print a one-line upgrade notice on stderr (purely informational; output and exit codes are unchanged).
 - `cassis eval run` runs the project's eval suite against your local context files (scored in-memory, nothing is pushed to Cassis) and prints per-question results, so you can test the changes on your git branch before merging.
 - `cassis context test` runs individual questions through the text-to-SQL agent using your local context files, so you can check that a change actually works (e.g. a new column gets picked), where `eval run` only checks for regressions on existing eval cases.
-- `cassis eval add-case` adds a gold question/SQL case to the project's eval suite: after fixing a context issue, add the question users were failing on so `eval run` guards it from regressing.
+- `cassis eval add-case` adds a gold question/SQL case to the project's eval suite: after fixing a context issue, add the question users were failing on so `eval run` guards it from regressing. Cassis then runs the new case three times in the background, and `eval list-cases` flags it if the attempts fail or disagree.
+- `cassis eval run --repeat N` runs every case N times (2 to 5) on the same context and model and compares the attempts per case: which cases flipped, and whether a flip came from the agent writing different SQL or the judge ruling differently on the same SQL. `cassis eval compare <run-id>` prints that comparison again. A repeat run measures noise: it opens no issue, is not the run shown before publishing, and exits 1 only when a case failed every attempt.
 - `cassis eval list-cases`, `cassis eval history` and `cassis eval delete-case` maintain the suite: list the current cases with their ids (flagging those whose gold SQL reads tables the context lacks), see how one case has behaved across runs (pass rate, whether repeated runs under one configuration disagree, divergences and timings), and prune one that is stale or wrong (e.g. its gold SQL encodes a definition the context has since changed).
 - `cassis schema plan <ddl>` (or `--warehouse` on a project connected to a warehouse) previews what a schema update would change before anything is applied: the source schema diff, the context changes Cassis will make (every change on a table placed in the context, with everything a drop takes with it) and warnings, terraform-style. `cassis schema apply <ddl>` (or `--plan <id>`) writes the resulting context files into the local checkout, app untouched, for review with `git diff`. `cassis schema push <ddl> [--publish]` pushes the new schema and the local context to the app (`--yes` in CI). The file speaks only for the schemas it contains: pass `--complete` when it is the project's complete source schema so schemas absent from it are treated as dropped. With `--warehouse` the server introspects the connected warehouse instead of parsing a file; the plan is always whole-source. `cassis schema plan <ddl> --dry-run` is the prepare-ahead variant: the plan is computed synchronously and nothing is kept in Cassis (no plan to apply or resume, the current plan untouched), so the schema snapshot for a change still in a PR can be planned against safely; `--write-checkout` writes the context files it would produce into the checkout, to commit alongside the schema change.
 - `cassis projects list` lists the projects your API key can reach: id (what `--project` and `CASSIS_PROJECT_ID` take), name, published context version, and data-source dialect. A pipeline or agent can discover the project id from the terminal instead of fishing it out of a webapp URL.
@@ -119,6 +120,10 @@ cassis eval list-cases --project ...
 cassis eval history 019f0000-0000-7000-8000-0000000000ca --project ...
 cassis eval delete-case 019f0000-0000-7000-8000-0000000000ca --project ...
 
+# Run the suite 3 times to see which cases flip, and why; print it again later:
+cassis eval run --repeat 3
+cassis eval compare 019f0000-0000-7000-8000-00000000aaaa --project ...
+
 # Pull the source schema into <base-path>/.schema.json (gitignored local snapshot):
 cassis schema pull
 
@@ -181,7 +186,7 @@ Configuration (flags take precedence over env vars):
 | `--api-key` | `CASSIS_API_KEY` | none (required)             |
 | `--api-url` | `CASSIS_API_URL` | `https://app.getcassis.com` |
 | `--base-path` | `CASSIS_BASE_PATH` | `cassis`, must match the project's git-sync "Path" setting |
-| `--project` (check, pull, upload, schema pull, eval run, eval add-case, eval list-cases, eval history, eval delete-case, test, issues, dbt push, dbt check) | `CASSIS_PROJECT_ID` | the id in `<base-path>/project.yml` (required before the first pull; `check` alone falls back to the project-less validation when unbound) |
+| `--project` (check, pull, upload, schema pull, eval run, eval add-case, eval list-cases, eval history, eval compare, eval delete-case, test, issues, dbt push, dbt check) | `CASSIS_PROJECT_ID` | the id in `<base-path>/project.yml` (required before the first pull; `check` alone falls back to the project-less validation when unbound) |
 
 `cassis eval run` also accepts `--case <id>` (repeatable; run only the named
 cases, ids from `eval list-cases` or `add-case`), `--label` (run label in the Evals page; defaults

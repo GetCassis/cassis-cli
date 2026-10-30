@@ -25,6 +25,7 @@ from cassis_cli.api import (
     get_eval_case_history,
     get_eval_cases,
     get_eval_run,
+    get_eval_run_comparison,
     get_eval_run_results,
     post_eval_case_create,
     post_eval_run_cancel,
@@ -272,6 +273,22 @@ def _footprint_note(case: dict[str, Any]) -> Optional[str]:
     return "; ".join(reasons)
 
 
+def _entry_check_note(case: dict[str, Any]) -> Optional[str]:
+    """One line on a case whose creation check flags it; None when stable or never checked."""
+    check = case.get("entry_check")
+    if not isinstance(check, dict):
+        return None
+    state = check.get("state")
+    score = f"{check.get('passed')}/{check.get('total')}" if check.get("total") else ""
+    if state == "flaky":
+        return f"flaky at creation ({score} attempts passed): its verdict is noise until the question or gold SQL is tightened"
+    if state == "failing":
+        return f"failing at creation ({score} attempts passed): check the gold SQL, or the context gap it exposes"
+    if state == "running":
+        return "entry check running (3 attempts on the current context)"
+    return None
+
+
 @app.command(name="add-case")
 def add_case(
     path: Path = typer.Argument(
@@ -328,6 +345,8 @@ def add_case(
     case is stored, so a case that cannot execute never enters the suite.
     The SQL comes from --gold-sql (inline) or --gold-sql-file (a file path;
     prefer it for multi-line SQL, which shell quoting mangles inline).
+    Cassis then runs the new case three times in the background, and
+    `cassis eval list-cases` flags it if the attempts fail or disagree.
     Exits 0 on creation, 1 on a duplicate question or gold SQL that does not
     run, 2 on usage errors, 3 on transport/API errors.
     """
@@ -379,6 +398,12 @@ def add_case(
                 fg=typer.colors.YELLOW,
                 err=True,
             )
+        check = case.get("entry_check")
+        if isinstance(check, dict) and check.get("state") == "running":
+            typer.echo(
+                "  Checking it: 3 attempts run on the current context in the background; "
+                "`cassis eval list-cases` flags it if they fail or disagree."
+            )
     raise typer.Exit(EXIT_OK)
 
 
@@ -427,7 +452,9 @@ def list_cases(
     what `cassis eval delete-case` and `cassis eval history` take. A case
     whose gold SQL does not fully resolve against the context (a table the
     context lacks, an ambiguous name, SQL that does not parse) is flagged
-    under its line, since such a case cannot be trusted to score a change.
+    under its line, since such a case cannot be trusted to score a change,
+    and so is a case whose three-attempt check after creation failed or
+    disagreed.
     Exits 0 on success, 2 on usage errors (including a --branch the project
     does not have), 3 on transport/API errors.
     """
@@ -459,6 +486,13 @@ def list_cases(
             if note:
                 flagged += 1
                 typer.secho(f"    ⚠ {note}", fg=typer.colors.YELLOW)
+            check_note = _entry_check_note(case)
+            if check_note:
+                running = (case.get("entry_check") or {}).get("state") == "running"
+                typer.secho(
+                    f"    {'…' if running else '⚠'} {check_note}",
+                    fg=None if running else typer.colors.YELLOW,
+                )
         if flagged:
             typer.secho(
                 f"{flagged} case(s) have a gold SQL that does not fully resolve against the context; "
@@ -467,6 +501,55 @@ def list_cases(
                 err=True,
             )
     raise typer.Exit(EXIT_OK)
+
+
+# How a flip reads to the person fixing it: which side of the evaluation moved.
+_CAUSE_HINTS = {
+    "judge": "the judge ruled differently on the same SQL: check the gold SQL and the question's wording",
+    "generation": "the agent wrote different SQL from the same context: the context leaves room for both",
+    "both": "the agent wrote different SQL and the judge also wavered",
+    "unattributed": "the evidence decides neither side (a re-judge failed, or the same SQL returned different rows)",
+}
+
+
+def _print_comparison(comparison: dict[str, Any]) -> None:
+    """A repeat run's attempts per case: the same comparison the webapp's run page shows."""
+    summary = comparison.get("summary") or {}
+    repeat = comparison.get("repeat_count") or 1
+    cases = comparison.get("cases") or []
+    typer.secho(f"Repeat comparison: {repeat} attempts per case, {summary.get('cases', len(cases))} cases", bold=True)
+    causes = summary.get("causes") or {}
+    flipped = f"{summary.get('flipped', 0)} flipped"
+    if causes:
+        flipped += " (" + ", ".join(f"{k} {n}" for k, n in causes.items()) + ")"
+    typer.echo(
+        f"  {summary.get('all_passed', 0)} passed every attempt · "
+        f"{summary.get('all_failed', 0)} failed every attempt · {flipped}"
+    )
+    if repeat < 2:
+        typer.echo("  Not a repeat run: start one with `cassis eval run --repeat N` to measure noise.")
+        return
+    shown = [c for c in cases if c.get("agreement") != "all_passed"]
+    if not shown:
+        return
+    typer.echo("")
+    for c in shown:
+        agreement = c.get("agreement")
+        icon = "~" if agreement == "flipped" else "✗"
+        color = typer.colors.YELLOW if agreement == "flipped" else typer.colors.RED
+        distinct = int(c.get("distinct_sql") or 0)
+        sqls = f"{distinct} SQL" if distinct == 1 else f"{distinct} SQLs"
+        cause = str(c.get("cause") or "")
+        question = str(c.get("question") or "").replace("\n", " ")
+        if len(question) > 60:
+            question = question[:57] + "..."
+        typer.secho(f"  {icon} {c.get('passed', 0)}/{c.get('total', 0)}  {cause:<13} {sqls:<8} {question}", fg=color)
+        typer.echo(f"      {c.get('test_case_id')}")
+    seen = [k for k in _CAUSE_HINTS if k in causes]
+    if seen:
+        typer.echo("")
+        for k in seen:
+            typer.echo(f"  {k}: {_CAUSE_HINTS[k]}")
 
 
 def _format_when(iso: str) -> str:
@@ -633,6 +716,76 @@ def history(
     raise typer.Exit(EXIT_OK)
 
 
+@app.command()
+def compare(
+    run_id: str = typer.Argument(
+        ...,
+        help="Id of the eval run (printed by `cassis eval run`).",
+    ),
+    path: Path = typer.Option(
+        Path("."),
+        "--path",
+        help="Repository checkout root (holds <base-path>/project.yml for the --project default).",
+    ),
+    project_id: Optional[str] = typer.Option(
+        None,
+        "--project",
+        envvar="CASSIS_PROJECT_ID",
+        help="Target Cassis project ID (UUID). Defaults to the id in <base-path>/project.yml.",
+    ),
+    api_key: Optional[str] = typer.Option(
+        None,
+        "--api-key",
+        envvar="CASSIS_API_KEY",
+        help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+    ),
+    api_url: str = typer.Option(
+        DEFAULT_API_URL,
+        "--api-url",
+        envvar="CASSIS_API_URL",
+        help="Cassis API base URL.",
+    ),
+    base_path: str = typer.Option(
+        DEFAULT_BASE_PATH,
+        "--base-path",
+        envvar="CASSIS_BASE_PATH",
+        help="Repository directory the context is exported under (holds project.yml for the --project default).",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print the comparison as raw JSON."),
+) -> None:
+    """Compare the attempts of a repeat run, case by case.
+
+    For a run started with `cassis eval run --repeat N`: how many cases passed
+    every attempt, failed every attempt or flipped, and for each flipping case
+    how many distinct SQLs the agent wrote and what moved between attempts:
+    `generation` (the agent wrote different SQL), `judge` (the judge ruled
+    differently on the same SQL), `both`, or `unattributed`. The same
+    comparison the webapp's run page shows. Exits 0 on success, 2 on usage
+    errors, 3 on transport/API errors (including a server too old to compare).
+    """
+    api_key = require_api_key(api_key)
+    project_id = resolve_project_id(project_id, path / Path(base_path))
+    try:
+        UUID(run_id)
+    except ValueError:
+        typer.secho(f"RUN_ID must be a UUID, got {run_id!r}.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_USAGE)
+    try:
+        comparison = get_eval_run_comparison(api_url=api_url, api_key=api_key, project_id=project_id, run_id=run_id)
+    except ApiError as exc:  # covers AuthError and EvalCompareUnsupportedError
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_TRANSPORT) from exc
+
+    if json_output:
+        typer.echo(json.dumps(comparison, indent=2))
+        raise typer.Exit(EXIT_OK)
+    if comparison.get("status") == "running":
+        typer.echo("The run is still in progress; its attempts are compared once it completes.")
+        raise typer.Exit(EXIT_OK)
+    _print_comparison(comparison)
+    raise typer.Exit(EXIT_OK)
+
+
 @app.command(name="delete-case")
 def delete_case(
     case_id: str = typer.Argument(
@@ -745,6 +898,13 @@ def run(
         "--label",
         help="Run label shown in the webapp's Evals page (default: the local git branch name).",
     ),
+    repeat: Optional[int] = typer.Option(
+        None,
+        "--repeat",
+        min=2,
+        max=5,
+        help="Run every case N times (2 to 5) as one diagnostic run, then compare the attempts per case.",
+    ),
     wait: bool = typer.Option(
         True,
         "--wait/--no-wait",
@@ -767,9 +927,14 @@ def run(
     an existing Cassis branch instead (no files are sent). With --case, only the
     named case(s) run — e.g. proving one fresh `add-case` in seconds instead of
     rerunning the whole suite; passed cases then print their SQL and evidence
-    too, so you can check the case passes for the right reason. Exits 0 when
-    the run completes with every case passed, 1 on any failed case / failed
-    run / invalid tree, 2 on usage errors (including a --branch the project
+    too, so you can check the case passes for the right reason. With --repeat
+    N, every case runs N times under the same context and model, and the
+    command prints how the attempts compare per case (`cassis eval compare`);
+    a repeat run is diagnostic, so it files no issue and is not the run the
+    webapp shows before publishing. Exits 0 when
+    the run completes with every case passed (with --repeat: no case failed
+    every attempt, since a flip is the noise being measured), 1 on any failed
+    case / failed run / invalid tree, 2 on usage errors (including a --branch the project
     does not have), 3 on transport errors or --timeout.
 
     Failed cases (and, with --case, passed ones) print the generated SQL as
@@ -808,6 +973,7 @@ def run(
             branch=branch,
             label=label,
             case_ids=case,
+            repeat_count=repeat,
         )
     except EvalStartValidationError as exc:
         _print_validation_failure(exc.detail, base_path)
@@ -831,6 +997,15 @@ def run(
     total = run_record.get("total_cases", 0)
     ontology_label = run_record.get("ontology_label") or "unpublished context"
     run_url = _run_page_url(app_url or api_url, project_id, run_id)
+    repeat_count = run_record.get("repeat_count")
+    if repeat is not None and repeat > 1 and not repeat_count:
+        # An older server drops the field: the run is an ordinary one, so say so
+        # rather than print a comparison it never measured.
+        typer.secho(
+            "This Cassis server ignored --repeat: the run executes each case once, as an ordinary run.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
 
     if not wait:
         if json_output:
@@ -841,7 +1016,10 @@ def run(
         raise typer.Exit(EXIT_OK)
 
     # To stderr under --json so `cassis eval run --json | jq` gets only the record.
-    typer.echo(f"Eval run {run_id} started: {total} cases against {ontology_label!r}.", err=json_output)
+    started = f"Eval run {run_id} started: {total} cases against {ontology_label!r}"
+    if repeat_count:
+        started += f", {repeat_count} attempts each"
+    typer.echo(f"{started}.", err=json_output)
 
     try:
         final_run, results = _wait_for_run(
@@ -849,7 +1027,7 @@ def run(
             api_key=api_key,
             project_id=project_id,
             run_id=run_id,
-            total=total,
+            total=total * (repeat_count or 1),
             poll_interval=poll_interval,
             timeout=timeout,
             json_output=json_output,
@@ -865,19 +1043,42 @@ def run(
             typer.secho(f"Could not cancel the run: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(EXIT_INTERRUPTED)
 
+    comparison: Optional[dict[str, Any]] = None
+    if repeat_count and final_run.get("status") == "completed":
+        try:
+            comparison = get_eval_run_comparison(api_url=api_url, api_key=api_key, project_id=project_id, run_id=run_id)
+        except ApiError as exc:
+            typer.secho(f"Could not compare the attempts: {exc}", fg=typer.colors.YELLOW, err=True)
+
     if json_output:
-        typer.echo(json.dumps({"run": final_run, "results": results, "run_url": run_url}, indent=2))
+        record: dict[str, Any] = {"run": final_run, "results": results, "run_url": run_url}
+        if comparison is not None:
+            record["comparison"] = comparison
+        typer.echo(json.dumps(record, indent=2))
     else:
         typer.echo("")
-        _print_results_table(results, passed_evidence=bool(case))
+        if comparison is not None:
+            _print_comparison(comparison)
+        else:
+            _print_results_table(results, passed_evidence=bool(case))
         typer.echo("")
         _print_summary(final_run)
         typer.echo(f"View details: {run_url}")
 
-    status = final_run.get("status")
-    if status == "completed" and all(r.get("status") == _PASSED for r in results):
+    if final_run.get("status") == "completed" and _suite_passed(results, repeated=bool(repeat_count)):
         raise typer.Exit(EXIT_OK)
     raise typer.Exit(EXIT_VALIDATION_FAILED)
+
+
+def _suite_passed(results: "list[dict[str, Any]]", *, repeated: bool) -> bool:
+    """Whether a completed run passes: every case passed, or on a repeat run, no case failed every attempt."""
+    if not repeated:
+        return all(r.get("status") == _PASSED for r in results)
+    passed_once: dict[str, bool] = {}
+    for r in results:
+        key = str(r.get("test_case_id") or r.get("question"))
+        passed_once[key] = passed_once.get(key, False) or r.get("status") == _PASSED
+    return all(passed_once.values())
 
 
 def _wait_for_run(
@@ -928,7 +1129,7 @@ def _wait_for_run(
 
     def on_timeout(_snapshot: "tuple[dict[str, Any], list[dict[str, Any]]]") -> None:
         typer.secho(
-            f"Timed out after {timeout:.0f}s waiting for run {run_id}. "
+            f"Timed out after {timeout:g}s waiting for run {run_id}. "
             "The run keeps going server-side — see the webapp's Evals page.",
             fg=typer.colors.YELLOW,
             err=True,

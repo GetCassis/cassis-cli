@@ -109,6 +109,7 @@ def verify(
                 branch=None,
                 case=None,
                 label=None,
+                repeat=None,
                 wait=True,
                 poll_interval=5.0,
                 timeout=1800.0,

@@ -594,6 +594,7 @@ def post_eval_run_start(
     branch: Optional[str] = None,
     label: Optional[str] = None,
     case_ids: Optional[list[str]] = None,
+    repeat_count: Optional[int] = None,
     transport: Optional[httpx.BaseTransport] = None,
 ) -> dict[str, Any]:
     """POST to /api/ci/projects/{project_id}/eval/runs and return the run record."""
@@ -607,6 +608,8 @@ def post_eval_run_start(
         body["label"] = label
     if case_ids is not None:
         body["test_case_ids"] = case_ids
+    if repeat_count is not None:
+        body["repeat_count"] = repeat_count
     try:
         # May carry the whole ontology tree in `files` — same budget as the
         # other whole-tree endpoints.
@@ -829,6 +832,41 @@ def get_eval_run_results(
     url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/eval/runs/{run_id}/results"
     result = _get_eval_json(url, api_key, transport)
     if not isinstance(result, list):
+        raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
+    return result
+
+
+class EvalCompareUnsupportedError(ApiError):
+    """The server predates run comparisons."""
+
+
+def get_eval_run_comparison(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    run_id: str,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> dict[str, Any]:
+    """GET /api/ci/projects/{project_id}/eval/runs/{run_id}/comparison: the run's attempts compared per case."""
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/eval/runs/{run_id}/comparison"
+    try:
+        with _client(transport=transport) as client:
+            response = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+    except httpx.HTTPError as exc:
+        raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
+    if response.status_code == 401:
+        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+    # A server without the route answers the framework's own "Not Found",
+    # distinct from the "Eval run not found" a real lookup returns.
+    if response.status_code == 404 and _detail_or_text(response) == "Not Found":
+        raise EvalCompareUnsupportedError("This Cassis server does not compare runs yet; it needs a newer server.")
+    if response.status_code in (403, 404):
+        raise _project_scope_error(response)
+    if response.status_code >= 400:
+        raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
+    result = _parse_json_response(response, url)
+    if not isinstance(result, dict) or not all(key in result for key in ("run_id", "summary", "cases")):
         raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
     return result
 

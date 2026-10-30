@@ -889,7 +889,7 @@ def _wait_for_plan(
             else "`cassis status` shows the outcome once it finishes"
         )
         typer.secho(
-            f"Timed out after {timeout:.0f}s: the {what} is still {record.get('status', '?')}. "
+            f"Timed out after {timeout:g}s: the {what} is still {record.get('status', '?')}. "
             f"It keeps running server-side; {resume}",
             fg=typer.colors.YELLOW,
             err=True,

@@ -111,7 +111,9 @@ _BASE_PATH_OPTION = typer.Option(
     DEFAULT_BASE_PATH, "--base-path", envvar="CASSIS_BASE_PATH", help="Context directory holding project.yml."
 )
 _POLL_INTERVAL_OPTION = typer.Option(2.0, "--poll-interval", help="Seconds between polls.")
-_TIMEOUT_OPTION = typer.Option(600.0, "--timeout", help="Give up waiting after this many seconds.")
+_TIMEOUT_OPTION = typer.Option(
+    600.0, "--timeout", help="Give up waiting after this many seconds (exit 3; the upload keeps processing)."
+)
 _JSON_OPTION = typer.Option(False, "--json", help="Print the upload record as raw JSON (the summary goes to stderr).")
 
 
@@ -139,7 +141,9 @@ def push(
     baseline, and files each part of the context the change puts in doubt as
     an issue (impact "at risk"). Exits 0 when accepted or superseded by a
     newer upload, 1 when rejected (invalid files, or no relation matches the
-    data source), 2 on usage errors, 3 on transport errors.
+    data source), 2 on usage errors, 3 on transport errors or a timeout (the
+    upload keeps processing server-side), or when Cassis fails on its side
+    while processing it.
     """
     record = _upload_and_wait(
         "push",
@@ -189,7 +193,8 @@ def check(
     nothing is filed and the baseline doesn't move. Exits 0 with or without
     findings, 1 when the upload is rejected (invalid files, or no baseline
     yet: run `cassis dbt push` on the production branch first), 2 on usage
-    errors, 3 on transport errors.
+    errors, 3 on transport errors or a timeout (the upload keeps processing
+    server-side), or when Cassis fails on its side while processing it.
     """
     record = _upload_and_wait(
         "check",
@@ -287,7 +292,7 @@ def _upload_and_wait(
 
     def on_timeout(last: "dict[str, Any]") -> None:
         typer.secho(
-            f"Timed out after {timeout:.0f}s: upload {observation_id} is still {last.get('status', '?')}. "
+            f"Timed out after {timeout:g}s: upload {observation_id} is still {last.get('status', '?')}. "
             "It keeps processing server-side.",
             fg=typer.colors.YELLOW,
             err=True,

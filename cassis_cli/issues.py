@@ -133,8 +133,9 @@ def list_issues(
 
     The order: editorial priority (P1, P2, P3, then unranked), then impact,
     then reach, then how the issue was found (dbt findings first), then
-    recurrence. Prints each issue's id, impact, occurrence count, reach (the
-    chat answers that used its context tables in the last 30 days; `-` when
+    recurrence. Prints each issue's priority (`-` when unranked), id, impact,
+    origin (conversation, eval or dbt), occurrence count, reach (the chat
+    answers that used any of its context tables in the last 30 days; `-` when
     not measured, because its sources name no context table), status, primary
     context domain (`-` when Cassis could not attach one) and title; the id is what
     `cassis issues show`, `resolve`, `dismiss` and `reopen` take. Triage one
@@ -176,6 +177,8 @@ def list_issues(
         reach = issue.get("reach_count")
         rows.append(
             [
+                # The editorial priority the list is sorted by first; `-` when unranked.
+                str(issue.get("priority") or "-"),
                 str(issue.get("id")),
                 str(issue.get("impact")),
                 # Always printed (conversation, eval or dbt), so every line has the same columns.
@@ -621,7 +624,7 @@ def _wait_for_analysis(
 
     def on_timeout(_run: "dict[str, Any]") -> None:
         typer.secho(
-            f"Timed out after {timeout:.0f}s waiting for analysis run {run_id}. "
+            f"Timed out after {timeout:g}s waiting for analysis run {run_id}. "
             "The analysis keeps going server-side — see the webapp's Issues page.",
             fg=typer.colors.YELLOW,
             err=True,

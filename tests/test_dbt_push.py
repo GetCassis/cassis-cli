@@ -145,6 +145,23 @@ def test_waiting_gives_up_at_the_timeout(dbt_repo, monkeypatch):
     assert f"Timed out after 0s: upload {OBSERVATION} is still processing" in result.output
 
 
+def test_a_sub_second_timeout_is_printed_as_given(dbt_repo, monkeypatch):
+    route(monkeypatch, Server(_record("processing")))
+
+    result = _push("--timeout", "0.5", "--poll-interval", "0.1")
+
+    assert result.exit_code == 3
+    assert f"Timed out after 0.5s: upload {OBSERVATION} is still processing" in result.output
+
+
+def test_the_help_documents_the_timeout_exit_code():
+    for command in ("push", "check"):
+        result = runner.invoke(app, ["dbt", command, "--help"], terminal_width=400)
+
+        assert result.exit_code == 0, result.output
+        assert "3 on transport errors or a timeout" in " ".join(result.output.split()), command
+
+
 def test_an_artifact_over_the_compressed_cap_is_a_usage_error(dbt_repo, monkeypatch):
     server = Server(_record("accepted"))
     route(monkeypatch, server)

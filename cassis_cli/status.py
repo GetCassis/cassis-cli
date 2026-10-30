@@ -197,7 +197,7 @@ def status(
 
     def on_timeout(_snapshot: "Tuple[dict[str, Any], str, bool]") -> None:
         typer.secho(
-            f"Timed out after {timeout:.0f}s: the published version still does not match the local HEAD.",
+            f"Timed out after {timeout:g}s: the published version still does not match the local HEAD.",
             fg=typer.colors.YELLOW,
             err=True,
         )
