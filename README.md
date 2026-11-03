@@ -325,3 +325,47 @@ requires an account.
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+
+## Read conversations and their analyses
+
+These commands read saved conversations and reports. They never start an analysis,
+retry a failed run, execute SQL or make a model call. Use the same API key and
+project selection as other commands (`CASSIS_API_KEY`, `--project`, or the
+checkout's `cassis/project.yml`). Requires a server with the conversation API.
+
+```bash
+cassis chats list --limit 20
+cassis chats list --review needs-attention --feedback down --since 2026-11-01
+cassis chats list --search revenue --offset 20
+cassis chats show <chat-id>
+cassis chats show <chat-id> --analysis-only
+cassis chats show <chat-id> --trace
+cassis chats show <chat-id> --trace-entry trace:<message-id>:<index>
+cassis chats show <chat-id> --json
+```
+
+`list` sorts by latest message, returns up to 20 chats by default (maximum 100
+per page), and reports the total and next offset. Filters combine with AND.
+`--feedback` accepts `up`, `down`, `any`, or `none`; a conversation with both
+positive and negative feedback matches both `up` and `down`. `--review
+needs-attention` selects completed latest reports containing a potential problem,
+not improvement suggestions alone. `--since` includes conversations created or
+with a message posted at or after the given ISO date or timestamp; dates and
+naive timestamps use UTC.
+
+`show` prints messages, generated SQL, feedback, then the saved analysis with its
+citations and next steps. Traces are compact by default; `--trace` adds previews
+limited to 500 characters per entry, and `--trace-entry` opens one entry in full.
+The entry identifiers match the analysis's trace references. `--json` returns the
+full messages and traces without those display limits; `--analysis-only --json`
+returns the analysis view. If a retry failed, the previous completed report is
+shown with the failed status. Missing analyses are reported explicitly.
+
+Members can read their own chats; administrators can read chats in accessible
+projects. API keys scoped to a project cannot reach another one. `--app-url`
+sets the base URL for browser links when the webapp and API use different hosts
+or ports. JSON list responses include `url` on each item and `next_offset`.
+Exit codes: 0 on a successful read (even with no report or an empty list), 1 for
+an inaccessible/missing chat or trace entry, 2 for invalid arguments, 3 for API
+or authentication errors.

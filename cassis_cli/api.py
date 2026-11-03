@@ -1328,3 +1328,56 @@ def get_dbt_observation(
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
     return _dbt_observation_response(response, url)
+
+
+class ChatNotFoundError(ApiError):
+    """The conversation does not exist or is not readable by this key."""
+
+
+def get_chats(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    chat_id: Optional[str] = None,
+    params: Optional[dict[str, Any]] = None,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> dict[str, Any]:
+    """Read a conversation page or a conversation with its saved analysis."""
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/chats"
+    if chat_id:
+        url += f"/{chat_id}"
+    try:
+        with _client(transport=transport) as client:
+            response = client.get(url, params=params, headers={"Authorization": f"Bearer {api_key}"})
+    except httpx.HTTPError as exc:
+        raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
+    if response.status_code == 401:
+        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+    if response.status_code == 404 and chat_id and _detail_or_text(response) == "Chat not found":
+        raise ChatNotFoundError("Conversation not found or not accessible to this API key.")
+    if response.status_code in (403, 404):
+        raise ApiError(
+            f"Conversation access denied (HTTP {response.status_code}). Check --project and the API key’s read access and project scope."
+        )
+    if response.status_code >= 400:
+        raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
+    data = _parse_json_response(response, url)
+    valid = isinstance(data, dict)
+    if valid and chat_id:
+        valid = (
+            isinstance(data.get("chat"), dict)
+            and "id" in data["chat"]
+            and isinstance(data.get("messages"), list)
+            and isinstance(data.get("analysis"), dict)
+        )
+    elif valid:
+        valid = (
+            isinstance(data.get("items"), list)
+            and isinstance(data.get("total"), int)
+            and isinstance(data.get("offset"), int)
+            and all(isinstance(row, dict) and "id" in row for row in data["items"])
+        )
+    if not valid:
+        raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
+    return data

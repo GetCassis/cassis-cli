@@ -3,6 +3,13 @@
 Versions match the releases on [PyPI](https://pypi.org/project/cassis-cli/); dates are the
 PyPI upload date.
 
+## 3.5.0 (2026-11-02)
+
+### Added
+
+- `cassis chats list` lists conversations you can access, with feedback, saved analysis status and links. Filter by `--feedback`, `--review needs-attention`, `--since` or `--search`; page with `--limit` and `--offset`.
+- `cassis chats show <id>` displays a conversation and its saved analysis, including observations, supporting quotes and suggested next steps. `--trace` shows compact execution previews; `--trace-entry trace:<message-id>:<index>` prints one full entry. `--analysis-only` shows just the report. `--json` returns structured data, with complete traces for `show`. Reading never starts an analysis or a model call. Requires a server supporting conversation reads through API keys. Members can read their own conversations; administrators can read conversations in accessible projects. Project-scoped keys retain their project restriction.
+
 ## 3.4.0 (2026-10-30)
 
 ### Added
