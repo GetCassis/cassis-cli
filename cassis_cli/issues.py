@@ -229,6 +229,8 @@ def show(
         typer.echo(json.dumps(issue, indent=2))
         raise typer.Exit(EXIT_OK)
 
+    if issue.get("restricted_sources"):
+        typer.echo("Some source conversations, evidence and evaluation drafts are restricted by your access.")
     occurrences = issue.get("occurrences") or []
     typer.echo(f"{issue.get('id')}  {one_line(issue.get('title'))}")
     typer.echo(
@@ -258,6 +260,11 @@ def show(
 
     _field("Description", issue.get("description"), blank_line=True)
     _field("Suggested action", issue.get("suggested_action"), blank_line=True)
+    for case in issue.get("eval_cases") or []:
+        # An older server sends no count: the case is named without its evidence.
+        count = case.get("supporting_results")
+        evidence = f" ({count} failing result{'s' if count != 1 else ''})" if count else ""
+        typer.echo(f"  Eval case {case['id']}{evidence}: {case['question']}")
     typer.echo("")
     typer.echo("Fix proposal: available (review it in Cassis)" if issue.get("fix_proposal") else "Fix proposal: none")
     if issue.get("status") == "open":

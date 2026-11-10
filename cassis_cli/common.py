@@ -23,6 +23,9 @@ EXIT_OK = 0
 EXIT_VALIDATION_FAILED = 1
 EXIT_USAGE = 2
 EXIT_TRANSPORT = 3
+# `eval run` reached no verdict to gate on: the run failed or was cancelled on
+# Cassis's side, or every case that did not pass errored instead of failing.
+EXIT_NO_VERDICT = 4
 # Conventional "terminated by SIGINT" code: the user pressed Ctrl-C while a
 # command was waiting on a server-side run (which the command cancels first).
 EXIT_INTERRUPTED = 130

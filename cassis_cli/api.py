@@ -111,6 +111,20 @@ class EvalBranchNotFoundError(ApiError):
     """`--branch` named an ontology branch the project does not have (404)."""
 
 
+class EvalBaseVersionNotFoundError(ApiError):
+    """`--base` named a published context version the project does not have (404)."""
+
+
+class EvalRunNotFoundError(ApiError):
+    """The project has no eval run with this id (404)."""
+
+
+# Wire contracts with the backend's exact 404 details: a missing base version or
+# run is bad input, not a project-scope (permissions) problem.
+_BASE_VERSION_NOT_FOUND = "Base context version not found"
+_EVAL_RUN_NOT_FOUND = "Eval run not found"
+
+
 def _is_branch_not_found(detail: object) -> bool:
     """Whether a 404 detail is the start endpoint's missing-branch message.
 
@@ -595,11 +609,26 @@ def post_eval_run_start(
     label: Optional[str] = None,
     case_ids: Optional[list[str]] = None,
     repeat_count: Optional[int] = None,
+    git_commit: Optional[str] = None,
+    ci_pipeline: Optional[str] = None,
+    ci_merge_request: Optional[str] = None,
+    changed: bool = False,
+    base_version_id: Optional[str] = None,
+    preview: bool = False,
     transport: Optional[httpx.BaseTransport] = None,
 ) -> dict[str, Any]:
-    """POST to /api/ci/projects/{project_id}/eval/runs and return the run record."""
-    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/eval/runs"
+    """POST to /api/ci/projects/{project_id}/eval/runs and return the run record.
+
+    ``git_commit``, ``ci_pipeline`` and ``ci_merge_request`` are the run's
+    provenance, shown on the webapp's Evals page; an older server ignores them.
+    """
+    route = "selection" if preview else "runs"
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/eval/{route}"
     body: dict[str, Any] = {}
+    if changed:
+        body["scope"] = "changed"
+    if base_version_id is not None:
+        body["base_version_id"] = base_version_id
     if files is not None:
         body["files"] = files
     if branch is not None:
@@ -610,6 +639,12 @@ def post_eval_run_start(
         body["test_case_ids"] = case_ids
     if repeat_count is not None:
         body["repeat_count"] = repeat_count
+    if git_commit is not None:
+        body["git_commit"] = git_commit
+    if ci_pipeline is not None:
+        body["ci_pipeline"] = ci_pipeline
+    if ci_merge_request is not None:
+        body["ci_merge_request"] = ci_merge_request
     try:
         # May carry the whole ontology tree in `files` — same budget as the
         # other whole-tree endpoints.
@@ -618,6 +653,13 @@ def post_eval_run_start(
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
 
+    # A server without the preview route answers the framework's own "Not Found".
+    if preview and response.status_code == 404 and _detail_or_text(response) == "Not Found":
+        raise ApiError("This Cassis server cannot preview a selection (--dry-run) yet; it needs a newer server.")
+    if response.status_code == 404 and _detail_or_text(response) == _BASE_VERSION_NOT_FOUND:
+        raise EvalBaseVersionNotFoundError(
+            f"No published context version {base_version_id} in this project (--base takes a published version id)."
+        )
     if response.status_code == 401:
         raise AuthError("The Cassis API rejected the API key (invalid or expired).")
     if response.status_code == 400:
@@ -637,7 +679,8 @@ def post_eval_run_start(
     if response.status_code >= 400:
         raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
     result = _parse_json_response(response, url)
-    if not isinstance(result, dict) or not all(key in result for key in ("run_id", "status", "total_cases")):
+    expected = ("mode", "cases") if preview else ("run_id", "status", "total_cases")
+    if not isinstance(result, dict) or not all(key in result for key in expected):
         raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
     return result
 
@@ -650,24 +693,50 @@ class EvalCaseGoldSqlError(ApiError):
     """The API rejected the gold SQL (400): it does not run against the project's data source."""
 
 
+class EvalCaseDefinitionError(ApiError):
+    """The API refused the case definition (422), e.g. an answer case without a gold SQL."""
+
+
 def post_eval_case_create(
     *,
     api_url: str,
     api_key: str,
     project_id: str,
     question: str,
-    gold_sql: str,
+    gold_sql: Optional[str],
+    expectation: Optional[dict[str, Any]] = None,
+    comparison: Optional[dict[str, Any]] = None,
+    pending_change: bool = False,
+    issue_id: Optional[str] = None,
     transport: Optional[httpx.BaseTransport] = None,
 ) -> dict[str, Any]:
-    """POST to /api/ci/projects/{project_id}/eval/cases and return the created case."""
+    """POST to /api/ci/projects/{project_id}/eval/cases and return the created case.
+
+    ``pending_change`` defers the case's check to the next publication: the
+    case guards a change not published yet. ``issue_id`` ties that wait to the
+    issue the case guards, so it ends when the issue is resolved. An older
+    server ignores both and checks the case at once.
+
+    ``expectation`` is what a correct response does (``{"kind": "answer" |
+    "cannot_answer"}``); left out, the case
+    expects an answer, which is also what a server older than expectations reads.
+    ``gold_sql`` may be None only on a cannot-answer case.
+    """
     url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/eval/cases"
+    body: dict[str, Any] = {"question": question}
+    if gold_sql is not None:
+        body["gold_sql"] = gold_sql
+    if expectation is not None:
+        body["expectation"] = expectation
+    if comparison is not None:
+        body["comparison"] = comparison
+    if pending_change:
+        body["pending_change"] = True
+    if issue_id is not None:
+        body["issue_id"] = issue_id
     try:
         with _client(transport=transport) as client:
-            response = client.post(
-                url,
-                json={"question": question, "gold_sql": gold_sql},
-                headers={"Authorization": f"Bearer {api_key}"},
-            )
+            response = client.post(url, json=body, headers={"Authorization": f"Bearer {api_key}"})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
 
@@ -677,6 +746,8 @@ def post_eval_case_create(
         raise EvalCaseExistsError(str(_detail_or_text(response)))
     if response.status_code == 400:
         raise EvalCaseGoldSqlError(str(_detail_or_text(response)))
+    if response.status_code == 422:
+        raise EvalCaseDefinitionError(_unprocessable_detail(response))
     if response.status_code in (403, 404):
         raise _project_scope_error(response)
     if response.status_code >= 400:
@@ -691,23 +762,104 @@ class EvalCaseNotFoundError(ApiError):
     """The project has no current eval case with this id."""
 
 
+class EvalCaseReplacedError(ApiError):
+    """The eval case was already replaced (or the question belongs to another current case)."""
+
+
+def post_eval_case_replace(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    case_id: str,
+    question: Optional[str],
+    gold_sql: Optional[str],
+    expectation: Optional[dict[str, Any]] = None,
+    comparison: Optional[dict[str, Any]] = None,
+    pending_change: bool = False,
+    issue_id: Optional[str] = None,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> tuple[dict[str, Any], bool]:
+    """POST /api/ci/projects/{project_id}/eval/cases/{case_id}/replace.
+
+    Return the case the server answered with and whether a replacement was
+    created (201) rather than nothing having changed (200). A field passed
+    as None keeps the current value; an empty gold SQL removes it.
+    """
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/eval/cases/{case_id}/replace"
+    body: dict[str, Any] = {}
+    if question is not None:
+        body["question"] = question
+    if gold_sql is not None:
+        body["gold_sql"] = gold_sql
+    if expectation is not None:
+        body["expectation"] = expectation
+    if comparison is not None:
+        body["comparison"] = comparison
+    if pending_change:
+        body["pending_change"] = True
+    if issue_id is not None:
+        body["issue_id"] = issue_id
+    try:
+        with _client(transport=transport) as client:
+            response = client.post(url, json=body, headers={"Authorization": f"Bearer {api_key}"})
+    except httpx.HTTPError as exc:
+        raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
+
+    if response.status_code == 401:
+        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+    if response.status_code == 409:
+        raise EvalCaseReplacedError(str(_detail_or_text(response)))
+    if response.status_code == 400:
+        raise EvalCaseGoldSqlError(str(_detail_or_text(response)))
+    if response.status_code == 422:
+        raise EvalCaseDefinitionError(_unprocessable_detail(response))
+    # Same exact-match wire contract as `delete_eval_case`: a missing case
+    # (exit 1) is not a project-scope 404 (exit 3).
+    if response.status_code == 404 and _detail_or_text(response) == "Eval case not found":
+        raise EvalCaseNotFoundError(f"No current eval case {case_id} in this project (already deleted, or wrong id?).")
+    if response.status_code in (403, 404):
+        raise _project_scope_error(response)
+    if response.status_code >= 400:
+        raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
+    result = _parse_json_response(response, url)
+    if not isinstance(result, dict) or not all(key in result for key in ("id", "question", "gold_sql")):
+        raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
+    return result, response.status_code == 201
+
+
+def _unprocessable_detail(response: httpx.Response) -> str:
+    """A 422's message: the server's own text, or the first validation error's."""
+    detail = _detail_or_text(response)
+    if isinstance(detail, list) and detail and isinstance(detail[0], dict):
+        return str(detail[0].get("msg", detail[0]))
+    return str(detail)
+
+
 def get_eval_cases(
     *,
     api_url: str,
     api_key: str,
     project_id: str,
     branch: Optional[str] = None,
+    include_replaced: bool = False,
     transport: Optional[httpx.BaseTransport] = None,
 ) -> list[dict[str, Any]]:
     """GET /api/ci/projects/{project_id}/eval/cases and return the case list.
 
     With ``branch``, each case's footprint is resolved against that context
     branch instead of main; a branch the project lacks raises
-    `EvalBranchNotFoundError` off the server's exact 404 detail.
+    `EvalBranchNotFoundError` off the server's exact 404 detail. With
+    ``include_replaced``, the cases a replacement superseded are listed too.
     """
     url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/eval/cases"
+    query: dict[str, str] = {}
     if branch is not None:
-        url += "?" + urlencode({"branch": branch})
+        query["branch"] = branch
+    if include_replaced:
+        query["include_replaced"] = "true"
+    if query:
+        url += "?" + urlencode(query)
     try:
         with _client(transport=transport) as client:
             response = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
@@ -797,6 +949,8 @@ def _get_eval_json(url: str, api_key: str, transport: Optional[httpx.BaseTranspo
 
     if response.status_code == 401:
         raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+    if response.status_code == 404 and _detail_or_text(response) == _EVAL_RUN_NOT_FOUND:
+        raise EvalRunNotFoundError("No such eval run in this project (wrong id, or another project's run?).")
     if response.status_code in (403, 404):
         raise _project_scope_error(response)
     if response.status_code >= 400:
@@ -836,6 +990,37 @@ def get_eval_run_results(
     return result
 
 
+def get_eval_runs(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    limit: int = 20,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> list[dict[str, Any]]:
+    """GET /api/ci/projects/{project_id}/eval/runs: the project's runs, newest first."""
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/eval/runs"
+    try:
+        with _client(transport=transport) as client:
+            response = client.get(url, headers={"Authorization": f"Bearer {api_key}"}, params={"limit": limit})
+    except httpx.HTTPError as exc:
+        raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
+    if response.status_code == 401:
+        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+    # A server without the route answers the framework's own "Not Found"
+    # (a GET on the start route's path is a 405 there, not a 404).
+    if response.status_code in (404, 405) and _detail_or_text(response) in ("Not Found", "Method Not Allowed"):
+        raise ApiError("This Cassis server does not list eval runs yet; it needs a newer server.")
+    if response.status_code in (403, 404):
+        raise _project_scope_error(response)
+    if response.status_code >= 400:
+        raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
+    result = _parse_json_response(response, url)
+    if not isinstance(result, dict) or not isinstance(result.get("runs"), list):
+        raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
+    return result["runs"]
+
+
 class EvalCompareUnsupportedError(ApiError):
     """The server predates run comparisons."""
 
@@ -861,12 +1046,76 @@ def get_eval_run_comparison(
     # distinct from the "Eval run not found" a real lookup returns.
     if response.status_code == 404 and _detail_or_text(response) == "Not Found":
         raise EvalCompareUnsupportedError("This Cassis server does not compare runs yet; it needs a newer server.")
+    if response.status_code == 404 and _detail_or_text(response) == _EVAL_RUN_NOT_FOUND:
+        raise EvalRunNotFoundError(f"No eval run {run_id} in this project (wrong id, or another project's run?).")
     if response.status_code in (403, 404):
         raise _project_scope_error(response)
     if response.status_code >= 400:
         raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
     result = _parse_json_response(response, url)
     if not isinstance(result, dict) or not all(key in result for key in ("run_id", "summary", "cases")):
+        raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
+    return result
+
+
+class EvalSpendUnsupportedError(ApiError):
+    """The server predates the automatic-run spend window."""
+
+
+def get_eval_spend(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> dict[str, Any]:
+    """GET /api/ci/projects/{project_id}/eval/spend: what automatic runs may still spend on the project."""
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/eval/spend"
+    try:
+        with _client(transport=transport) as client:
+            response = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+    except httpx.HTTPError as exc:
+        raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
+    if response.status_code == 401:
+        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+    # A server without the route answers the framework's own "Not Found".
+    if response.status_code == 404 and _detail_or_text(response) == "Not Found":
+        raise EvalSpendUnsupportedError("This Cassis server does not report eval spend yet; it needs a newer server.")
+    if response.status_code in (403, 404):
+        raise _project_scope_error(response)
+    if response.status_code >= 400:
+        raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
+    result = _parse_json_response(response, url)
+    if not isinstance(result, dict) or not all(key in result for key in ("limit_cents", "spent_cents")):
+        raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
+    return result
+
+
+def get_eval_health(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> dict[str, Any]:
+    """GET /api/ci/projects/{project_id}/eval/health: case-health evidence and review recommendations."""
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/eval/health"
+    try:
+        with _client(transport=transport) as client:
+            response = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+    except httpx.HTTPError as exc:
+        raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
+    if response.status_code == 401:
+        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+    # A server without the route answers the framework's own "Not Found".
+    if response.status_code == 404 and _detail_or_text(response) == "Not Found":
+        raise ApiError("This Cassis server does not report suite health yet; it needs a newer server.")
+    if response.status_code in (403, 404):
+        raise _project_scope_error(response)
+    if response.status_code >= 400:
+        raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
+    result = _parse_json_response(response, url)
+    if not isinstance(result, dict) or not all(key in result for key in ("cases", "attention_count", "history_limit")):
         raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
     return result
 

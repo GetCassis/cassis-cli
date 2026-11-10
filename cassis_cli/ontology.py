@@ -11,9 +11,13 @@ from cassis_cli.api import (
     DEFAULT_API_URL,
     ApiError,
     AuthError,
+    EvalCaseExistsError,
     OntologyTestValidationError,
     UploadValidationError,
+    get_eval_cases,
     get_ontology_export,
+    post_eval_case_create,
+    post_eval_case_replace,
     post_ontology_check,
     post_ontology_fmt,
     post_ontology_import,
@@ -124,6 +128,9 @@ def check(
     warnings = result.get("warnings") or []
     ref_warnings = [w for w in warnings if w.get("stage") == "references"]
     eval_warnings = [w for w in warnings if w.get("stage") == "evals"]
+    # The evals stage carries two kinds: cases that do not resolve, and changes no case reads.
+    coverage_warnings = [w for w in eval_warnings if str(w.get("message", "")).startswith("[eval_coverage]")]
+    eval_warnings = [w for w in eval_warnings if w not in coverage_warnings]
     # Everything else is the quality audit; bucketing by "not one of the
     # stages named here" keeps a warning stage this CLI predates visible
     # instead of silently dropped.
@@ -168,6 +175,14 @@ def check(
             bold=True,
         )
         for warning in eval_warnings:
+            typer.secho(f"  {warning.get('message', '')}", fg=typer.colors.YELLOW)
+    if coverage_warnings and not json_output:
+        typer.secho(
+            f"{len(coverage_warnings)} change(s) no eval case guards — advisory:",
+            fg=typer.colors.YELLOW,
+            bold=True,
+        )
+        for warning in coverage_warnings:
             typer.secho(f"  {warning.get('message', '')}", fg=typer.colors.YELLOW)
     if audit_warnings and not json_output:
         # Same wording as `context test` so the two commands read alike.
@@ -562,6 +577,20 @@ def test(
         help="Repository directory the context is exported under (the project's git-sync Path setting).",
     ),
     json_output: bool = typer.Option(False, "--json", help="Print the raw JSON outcomes."),
+    save_case: bool = typer.Option(
+        False,
+        "--save-case",
+        help=(
+            "Add each successful probe to the project's eval suite as a case: its question and the SQL it "
+            "produced, as `cassis eval add-case --pending-change` would (checked after your change is "
+            "published). A probe that failed, asked a clarification or wrote no SQL is not saved."
+        ),
+    ),
+    issue: Optional[str] = typer.Option(
+        None,
+        "--issue",
+        help="With --save-case: the issue the saved cases guard; their check waits for its resolution.",
+    ),
 ) -> None:
     """Run questions through the text-to-SQL agent using your local context files.
 
@@ -597,14 +626,159 @@ def test(
         outcomes.append(outcome)
         if not json_output:
             _print_test_outcome(q, outcome)
+            if not save_case and _probe_succeeded(outcome):
+                typer.echo("  Keep it as an eval case with --save-case, so `cassis eval run` guards it.")
         if outcome.get("status") != "completed":
             failed = True
+        if save_case:
+            saved, save_failed = _save_probe_as_case(
+                api_url=api_url,
+                api_key=api_key,
+                project_id=project_id,
+                question=q,
+                outcome=outcome,
+                quiet=json_output,
+                issue_id=issue,
+            )
+            outcome["saved_case"] = saved
+            failed = failed or save_failed
 
     if json_output:
         # Always a list, regardless of how many questions ran — scripts
         # shouldn't have to branch on the shape.
         typer.echo(json.dumps(outcomes, indent=2))
     raise typer.Exit(EXIT_VALIDATION_FAILED if failed else EXIT_OK)
+
+
+def _probe_succeeded(outcome: "dict") -> bool:
+    """A probe that wrote SQL without asking anything: the kind --save-case keeps."""
+    return (
+        outcome.get("status") == "completed"
+        and outcome.get("run_status") == "success"
+        and bool(outcome.get("generated_sql"))
+        and not outcome.get("clarifications")
+    )
+
+
+def _save_probe_as_case(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    question: str,
+    outcome: "dict",
+    quiet: bool,
+    issue_id: Optional[str] = None,
+) -> "tuple[Optional[dict], bool]":
+    """Keep a successful probe as an eval case: its question and the SQL it produced.
+
+    Return the created case and whether saving failed. A probe that failed,
+    asked a clarification or wrote no SQL has no gold to keep: it is skipped
+    with a line saying so, and that is not a failure.
+    """
+    sql = outcome.get("generated_sql")
+    if outcome.get("status") != "completed" or outcome.get("run_status") != "success" or not sql:
+        if not quiet:
+            typer.secho("  Not saved as an eval case: the probe produced no successful SQL.", fg=typer.colors.YELLOW)
+        return None, False
+    asked = [c for c in outcome.get("clarifications") or [] if isinstance(c, dict) and c.get("question")]
+    if asked:
+        # Its SQL rests on the agent's own guess, and an answer case fails when the agent asks.
+        if not quiet:
+            typer.secho(
+                f"  Not saved as an eval case: the agent asked \"{asked[0]['question']}\". "
+                "Write the question with that detail and probe it again.",
+                fg=typer.colors.YELLOW,
+            )
+        return None, False
+    try:
+        # The probe ran on local files: the change it proves is not published yet.
+        case = post_eval_case_create(
+            api_url=api_url,
+            api_key=api_key,
+            project_id=project_id,
+            question=question,
+            gold_sql=sql,
+            pending_change=True,
+            issue_id=issue_id,
+        )
+    except EvalCaseExistsError:
+        # Probing again is the normal loop: a pending case takes the new SQL,
+        # a case already checked keeps guarding the question.
+        return _resave_probe(
+            api_url=api_url,
+            api_key=api_key,
+            project_id=project_id,
+            question=question,
+            sql=sql,
+            quiet=quiet,
+            issue_id=issue_id,
+        )
+    except (AuthError, ApiError) as exc:
+        typer.secho(f"  Could not save the eval case: {exc}", fg=typer.colors.RED, err=True)
+        return None, True
+    if not quiet:
+        typer.secho(
+            f"  Saved as eval case {case.get('id')}; Cassis checks it after your change is published.",
+            fg=typer.colors.GREEN,
+        )
+        typer.echo("  Its gold SQL is the SQL above: read it, a wrong gold makes a wrong guard.")
+    return case, False
+
+
+def _resave_probe(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    question: str,
+    sql: str,
+    quiet: bool,
+    issue_id: Optional[str],
+) -> "tuple[Optional[dict], bool]":
+    """Handle a probe whose question the suite already asks: refresh a pending case, keep a checked one."""
+    try:
+        existing = next(
+            (
+                c
+                for c in get_eval_cases(api_url=api_url, api_key=api_key, project_id=project_id)
+                if " ".join(str(c.get("question") or "").split()) == " ".join(question.split())
+            ),
+            None,
+        )
+        if existing is None:
+            typer.secho(
+                "  Could not save the eval case: the suite already asks this question.", fg=typer.colors.RED, err=True
+            )
+            return None, True
+        check = existing.get("entry_check") or {}
+        if not (isinstance(check, dict) and check.get("state") == "pending_change"):
+            if not quiet:
+                typer.secho(f"  Already guarded by eval case {existing.get('id')}.", fg=typer.colors.GREEN)
+            return existing, False
+        case, created = post_eval_case_replace(
+            api_url=api_url,
+            api_key=api_key,
+            project_id=project_id,
+            case_id=str(existing.get("id")),
+            question=None,
+            gold_sql=sql,
+            pending_change=True,
+            issue_id=issue_id or check.get("issue_id"),
+        )
+    except (AuthError, ApiError) as exc:
+        typer.secho(f"  Could not save the eval case: {exc}", fg=typer.colors.RED, err=True)
+        return None, True
+    if not quiet:
+        if created:
+            typer.secho(
+                f"  Updated pending eval case {existing.get('id')} with this SQL (now {case.get('id')}).",
+                fg=typer.colors.GREEN,
+            )
+            typer.echo("  Its gold SQL is the SQL above: read it, a wrong gold makes a wrong guard.")
+        else:
+            typer.secho(f"  Already saved as pending eval case {existing.get('id')}.", fg=typer.colors.GREEN)
+    return case, False
 
 
 def _print_test_validation_failure(detail: object, base_path: str) -> None:
@@ -639,6 +813,10 @@ def _print_test_outcome(question: str, outcome: "dict") -> None:
         typer.echo(_indent(outcome["generated_sql"]))
     if outcome.get("answer"):
         typer.echo(f"  Answer: {outcome['answer']}")
+    for asked in outcome.get("clarifications") or []:
+        # Nobody answers a probe: what the agent wanted to know is part of the outcome.
+        if isinstance(asked, dict) and asked.get("question"):
+            typer.secho(f"  Asked on the way: {asked['question']}", fg=typer.colors.YELLOW)
     results = outcome.get("results")
     # None means the SQL was never executed (schema-only source); an empty
     # list means the query ran and returned nothing — show the distinction.

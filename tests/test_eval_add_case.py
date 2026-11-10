@@ -56,8 +56,100 @@ class TestEvalAddCase:
 
         assert result.exit_code == 0, result.output
         assert f"/api/ci/projects/{PROJECT_ID}/eval/cases" in seen["url"]
+        # No --expect: nothing is sent, so an older server reads the case as before.
         assert seen["body"] == {"question": "Net revenue last month?", "gold_sql": "SELECT 1"}
         assert "Added eval case" in result.output
+        assert "Expects" not in result.output
+
+    def test_pending_change_defers_the_check_and_softens_the_missing_table_warning(self, monkeypatch):
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(
+                201,
+                json={
+                    "id": "019f0000-0000-7000-8000-0000000000ca",
+                    "question": "Net revenue last month?",
+                    "gold_sql": "SELECT 1 FROM s.invoices",
+                    "entry_check": {"state": "pending_change"},
+                    "footprint": {"state": "diverged", "tables": [], "unresolved": ["s.invoices"]},
+                },
+            )
+
+        _mock_api(monkeypatch, handler)
+
+        result = runner.invoke(app, _args("--pending-change"))
+
+        assert result.exit_code == 0, result.output
+        assert seen["body"]["pending_change"] is True
+        assert "Pending the change: Cassis checks it after the next publication" in result.output
+        assert "expected until the change is published" in result.output
+        assert "add the tables to the context" not in result.output
+
+    def test_expect_cannot_answer_takes_no_fact(self, monkeypatch):
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(
+                201,
+                json={
+                    "id": "019f0000-0000-7000-8000-0000000000ca",
+                    "question": "Net revenue last month?",
+                    "gold_sql": "SELECT 1",
+                    "expectation": {"kind": "cannot_answer"},
+                },
+            )
+
+        _mock_api(monkeypatch, handler)
+
+        result = runner.invoke(app, _args("--expect", "cannot-answer"))
+
+        assert result.exit_code == 0, result.output
+        assert seen["body"]["expectation"] == {"kind": "cannot_answer"}
+        assert "Expects the agent to say the question cannot be answered" in result.output
+
+    def test_an_older_server_that_ignores_expect_is_called_out(self, monkeypatch):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                201,
+                json={"id": "019f0000-0000-7000-8000-0000000000ca", "question": "Q?", "gold_sql": "SELECT 1"},
+            )
+
+        _mock_api(monkeypatch, handler)
+
+        result = runner.invoke(app, _args("--expect", "cannot-answer"))
+
+        assert result.exit_code == 0, result.output
+        assert "This server ignores --expect" in result.output
+
+    def test_json_mode_still_warns_on_stderr_when_expect_is_ignored(self, monkeypatch):
+        body = {"id": "019f0000-0000-7000-8000-0000000000ca", "question": "Q?", "gold_sql": "SELECT 1"}
+        _mock_api(monkeypatch, lambda request: httpx.Response(201, json=body))
+
+        result = runner.invoke(app, _args("--expect", "cannot-answer", "--json"))
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout) == body
+        assert "This server ignores --expect" in result.stderr
+
+    def test_expect_answer_is_the_default_and_never_warns(self, monkeypatch):
+        body = {"id": "019f0000-0000-7000-8000-0000000000ca", "question": "Q?", "gold_sql": "SELECT 1"}
+        _mock_api(monkeypatch, lambda request: httpx.Response(201, json=body))
+
+        result = runner.invoke(app, _args("--expect", "answer"))
+
+        assert result.exit_code == 0, result.output
+        assert "ignores --expect" not in result.output
+
+    def test_an_unknown_expectation_is_a_usage_error(self, monkeypatch):
+        _mock_api(monkeypatch, lambda request: httpx.Response(500))
+
+        result = runner.invoke(app, _args("--expect", "clarify"))
+
+        assert result.exit_code == 2
+        assert "--expect must be one of answer, cannot-answer" in result.output
 
     def test_duplicate_exits_one(self, monkeypatch):
         def handler(request: httpx.Request) -> httpx.Response:
@@ -143,14 +235,14 @@ class TestEvalAddCase:
         result = runner.invoke(app, _args("--gold-sql-file", str(sql_file)))
 
         assert result.exit_code == 2
-        assert "exactly one" in result.output
+        assert "at most one" in result.output
 
     def test_neither_gold_sql_flag_is_usage_error(self):
         result = runner.invoke(
             app, ["eval", "add-case", "--project", PROJECT_ID, "--api-key", "sk-k6-test", "-q", "Refunds?"]
         )
         assert result.exit_code == 2
-        assert "exactly one" in result.output
+        assert "Pass --gold-sql or --gold-sql-file" in result.output
 
     def test_unreadable_gold_sql_file_is_usage_error(self, tmp_path):
         result = runner.invoke(
@@ -188,3 +280,44 @@ class TestEvalAddCase:
 
         assert result.exit_code == 0, result.output
         assert json.loads(result.output)["gold_sql"] == "SELECT 1"
+
+    def test_compare_words_round_trip_and_reject_ignored_settings(self, monkeypatch):
+        seen = {}
+        acknowledged = True
+
+        def handler(request):
+            body = json.loads(request.content)
+            seen.update(body)
+            response = {"id": "case", **body}
+            if not acknowledged:
+                response.pop("comparison")
+            return httpx.Response(201, json=response)
+
+        _mock_api(monkeypatch, handler)
+        flags = ("--compare", "exact, ordered,allow-empty")
+        result = runner.invoke(app, _args(*flags))
+        assert result.exit_code == 0, result.output
+        assert seen["comparison"] == {
+            "numeric": "exact",
+            "ordered": True,
+            "columns": "automatic",
+            "allow_empty": True,
+        }
+        assert "exact numbers" in result.output
+        acknowledged = False
+        result = runner.invoke(app, _args(*flags, "--json"))
+        assert result.exit_code == 3
+        assert "did not acknowledge" in result.output
+
+    def test_invalid_compare_words_do_not_write(self, monkeypatch):
+        def handler(request):
+            raise AssertionError("Invalid comparison must not reach the API")
+
+        _mock_api(monkeypatch, handler)
+        for flags in [
+            ("--compare", "relative"),
+            ("--compare", "default,exact"),
+            ("--compare", ""),
+        ]:
+            result = runner.invoke(app, _args(*flags))
+            assert result.exit_code == 2, result.output

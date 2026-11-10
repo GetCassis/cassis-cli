@@ -96,19 +96,35 @@ _COMPARISON = {
 }
 
 
-def _compare_args(*extra):
-    return ["eval", "compare", RUN_ID, "--project", PROJECT_ID, "--api-key", "sk-k6-test", *extra]
+def _show_args(*extra):
+    return ["eval", "show", RUN_ID, "--project", PROJECT_ID, "--api-key", "sk-k6-test", *extra]
 
 
-class TestCompareCommand:
+def _route(run, comparison=None, results=None):
+    def handler(request):
+        url = str(request.url)
+        if url.endswith(f"/eval/runs/{RUN_ID}"):
+            return httpx.Response(200, json=run)
+        if url.endswith("/comparison"):
+            return comparison if isinstance(comparison, httpx.Response) else httpx.Response(200, json=comparison)
+        if url.endswith("/results"):
+            return httpx.Response(200, json=results or [])
+        raise AssertionError(f"unexpected request: {url}")
+
+    return handler
+
+
+class TestShowCommand:
     def test_prints_flips_with_their_cause(self, monkeypatch):
         def handler(request):
+            if str(request.url).endswith(f"/api/ci/projects/{PROJECT_ID}/eval/runs/{RUN_ID}"):
+                return httpx.Response(200, json=_run_body(status="completed"))
             assert str(request.url).endswith(f"/api/ci/projects/{PROJECT_ID}/eval/runs/{RUN_ID}/comparison")
             return httpx.Response(200, json=_COMPARISON)
 
         _mock_api(monkeypatch, handler)
 
-        result = runner.invoke(app, _compare_args())
+        result = runner.invoke(app, _show_args())
 
         assert result.exit_code == 0, result.output
         assert "Repeat comparison: 3 attempts per case, 2 cases" in result.output
@@ -120,32 +136,75 @@ class TestCompareCommand:
         assert "Wins by driver?" not in result.output
         assert "judge: the judge ruled differently on the same SQL" in result.output
 
-    def test_json_passes_the_body_through(self, monkeypatch):
-        _mock_api(monkeypatch, lambda request: httpx.Response(200, json=_COMPARISON))
+    def test_a_change_scoped_run_says_how_much_of_the_suite_it_covered(self, monkeypatch):
+        rows = [{"case_id": CASE_A, "selected": True}, {"case_id": CASE_B, "selected": True}]
+        rows += [{"case_id": f"other-{i}", "selected": False} for i in range(13)]
+        run = {**_run_body(status="completed"), "selection": {"mode": "changed", "cases": rows}}
 
-        result = runner.invoke(app, _compare_args("--json"))
+        def handler(request):
+            if str(request.url).endswith(f"/eval/runs/{RUN_ID}"):
+                return httpx.Response(200, json=run)
+            return httpx.Response(200, json=_COMPARISON)
+
+        _mock_api(monkeypatch, handler)
+
+        result = runner.invoke(app, _show_args())
 
         assert result.exit_code == 0, result.output
-        assert json.loads(result.output) == _COMPARISON
+        assert "Repeat comparison: 3 attempts per case, 2 of 15 cases (affected by a context change)" in result.output
+
+    def test_json_carries_the_run_and_the_comparison(self, monkeypatch):
+        _mock_api(monkeypatch, _route(_run_body(status="completed"), _COMPARISON))
+
+        result = runner.invoke(app, _show_args("--json"))
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["comparison"] == _COMPARISON
+
+    def test_a_single_attempt_run_prints_its_results_and_verdict(self, monkeypatch):
+        run = {
+            **_run_body(status="completed", repeat_count=None, summary={"total": 1, "passed": 0, "accuracy": 0.0}),
+            "verdict": {"base_version_number": 7, "regressions": [], "already_failing": [CASE_A], "pending": []},
+        }
+        results = [{"test_case_id": CASE_A, "question": "Pit stops per team?", "status": "failed", "error": "x"}]
+        _mock_api(monkeypatch, _route(run, results=results))
+
+        result = runner.invoke(app, _show_args())
+
+        assert result.exit_code == 0, result.output
+        assert "Already failing on v7" in result.output
+        assert "Pit stops per team?" in result.output
 
     def test_an_older_server_says_it_cannot_compare(self, monkeypatch):
-        _mock_api(monkeypatch, lambda request: httpx.Response(404, json={"detail": "Not Found"}))
+        _mock_api(
+            monkeypatch,
+            _route(_run_body(status="completed"), httpx.Response(404, json={"detail": "Not Found"})),
+        )
 
-        result = runner.invoke(app, _compare_args())
+        result = runner.invoke(app, _show_args())
 
         assert result.exit_code == 3
         assert "does not compare runs yet" in result.output
 
-    def test_an_unknown_run_is_a_scope_error(self, monkeypatch):
+    def test_an_unknown_run_exits_one_naming_it(self, monkeypatch):
         _mock_api(monkeypatch, lambda request: httpx.Response(404, json={"detail": "Eval run not found"}))
 
-        result = runner.invoke(app, _compare_args())
+        result = runner.invoke(app, _show_args())
+
+        assert result.exit_code == 1
+        assert f"No eval run {RUN_ID} in this project" in result.output
+        assert "API key" not in result.output
+
+    def test_an_unknown_project_stays_a_scope_error(self, monkeypatch):
+        _mock_api(monkeypatch, lambda request: httpx.Response(404, json={"detail": "Project not found"}))
+
+        result = runner.invoke(app, _show_args())
 
         assert result.exit_code == 3
-        assert "Eval run not found" in result.output
+        assert "Project not found" in result.output
 
     def test_bad_run_id_is_a_usage_error(self):
-        result = runner.invoke(app, ["eval", "compare", "nope", "--project", PROJECT_ID, "--api-key", "sk-k6-test"])
+        result = runner.invoke(app, ["eval", "show", "nope", "--project", PROJECT_ID, "--api-key", "sk-k6-test"])
 
         assert result.exit_code == 2
 

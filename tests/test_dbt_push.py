@@ -561,7 +561,21 @@ def test_an_accepted_push_lists_the_issues_it_filed(dbt_repo, monkeypatch):
         f"{issue_id}  (new)  analytics.orders.status: Column `status` is gone from orders."
         " · reached by 3 answers in the last 30 days"
     ) in result.output
-    assert f"https://app.example.com/context?projectId={PROJECT}&tab=review&issueId={issue_id}" in result.output
+    assert f"https://app.example.com/context?projectId={PROJECT}&tab=issues&issueId={issue_id}" in result.output
+
+
+def test_an_accepted_push_reports_findings_awaiting_curation(dbt_repo, monkeypatch):
+    pending = {**_COLUMN_GONE, "issue_id": None, "issue_outcome": "pending_curation"}
+    record = _record("accepted", findings=[pending], review={**_REVIEW, "not_reviewed_tables": []})
+    route(monkeypatch, Server(record))
+
+    result = _push()
+
+    assert result.exit_code == 0, result.output
+    assert "1 finding(s) saved for issue curation:" in result.output
+    assert "analytics.orders.status: Column `status` is gone from orders." in result.output
+    assert f"Source observation: {record['id']}" in result.output
+    assert "issueId=" not in result.output
 
 
 def test_a_catalog_older_than_the_manifest_is_skipped(dbt_repo, monkeypatch):

@@ -624,3 +624,15 @@ def test_resolve_interactive_publication_confirmation(monkeypatch, answer, expec
     assert bool(seen) == (expected_code == 0)
     if seen:
         assert seen[0]["confirm_published"] is True
+
+
+@pytest.mark.parametrize("restricted", [False, True])
+def test_show_explains_restricted_sources(monkeypatch, restricted):
+    issue = dict(_ISSUE, restricted_sources=restricted, occurrences=[])
+    _mock(monkeypatch, "get_issue", get_issue, lambda request: httpx.Response(200, json=issue))
+    result = runner.invoke(app, _args("issues", "show", ISSUE_ID))
+    assert result.exit_code == 0
+    assert ("restricted by your access" in result.output) is restricted
+    structured = runner.invoke(app, _args("issues", "show", ISSUE_ID, "--json"))
+    assert structured.exit_code == 0
+    assert json.loads(structured.output)["restricted_sources"] is restricted

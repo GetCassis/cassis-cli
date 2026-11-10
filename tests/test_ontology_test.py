@@ -84,6 +84,24 @@ class TestOntologyTest:
         assert result.exit_code == 0, result.output
         assert "missing_concept" in result.output
 
+    def test_the_questions_the_agent_asked_are_part_of_the_outcome(self, repo, monkeypatch):
+        """Nobody answers a probe: the agent is told so and goes on, and what it asked is printed."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = _completed_body()
+            body["clarifications"] = [
+                {"question": "Which period: 2023 or 2024?", "answer": "No answer is available for this question."}
+            ]
+            return httpx.Response(200, json=body)
+
+        _mock_api(monkeypatch, handler)
+
+        result = runner.invoke(app, _args(repo, "-q", "How many orders last year?"))
+
+        assert result.exit_code == 0, result.output
+        assert "Asked on the way: Which period: 2023 or 2024?" in result.output
+        assert "There are 42 orders." in result.output
+
     def test_multiple_questions_probe_each(self, repo, monkeypatch):
         questions = []
 
@@ -153,3 +171,102 @@ class TestOntologyTest:
         parsed = json.loads(result.output)
         # Always a list, even for a single question — stable shape for scripts.
         assert isinstance(parsed, list) and parsed[0]["status"] == "completed"
+
+
+class TestSaveCase:
+    def test_a_successful_probe_is_saved_with_its_sql(self, repo, monkeypatch):
+        _mock_api(monkeypatch, lambda request: httpx.Response(200, json=_completed_body()))
+        seen = {}
+
+        def fake_create(**kwargs):
+            seen.update(kwargs)
+            return {"id": "case-1", "question": kwargs["question"], "entry_check": {"state": "running"}}
+
+        monkeypatch.setattr("cassis_cli.ontology.post_eval_case_create", fake_create)
+
+        result = runner.invoke(app, _args(repo, "-q", "How many orders?", "--save-case"))
+
+        assert result.exit_code == 0, result.output
+        assert seen["project_id"] == PROJECT_ID
+        assert seen["question"] == "How many orders?"
+        assert seen["gold_sql"] == "SELECT COUNT(*) FROM orders"
+        # The probe ran on local files: the case waits for the change to be published.
+        assert seen["pending_change"] is True
+        assert "Saved as eval case case-1" in result.output
+        assert "after your change is published" in result.output
+
+    def test_probing_again_refreshes_a_pending_case_and_keeps_a_checked_one(self, repo, monkeypatch):
+        from cassis_cli.api import EvalCaseExistsError
+
+        _mock_api(monkeypatch, lambda request: httpx.Response(200, json=_completed_body()))
+
+        def exists(**kwargs):
+            raise EvalCaseExistsError("duplicate question")
+
+        monkeypatch.setattr("cassis_cli.ontology.post_eval_case_create", exists)
+        replaced = []
+        monkeypatch.setattr(
+            "cassis_cli.ontology.post_eval_case_replace",
+            lambda **kwargs: (replaced.append(kwargs) or {"id": "case-2"}, True),
+        )
+        state = {"value": "pending_change"}
+        monkeypatch.setattr(
+            "cassis_cli.ontology.get_eval_cases",
+            lambda **kwargs: [
+                {"id": "case-1", "question": "How many orders?", "entry_check": {"state": state["value"]}}
+            ],
+        )
+
+        pending = runner.invoke(app, _args(repo, "-q", "How many orders?", "--save-case"))
+        assert pending.exit_code == 0, pending.output
+        assert replaced[0]["gold_sql"] == "SELECT COUNT(*) FROM orders" and replaced[0]["pending_change"] is True
+        assert "Updated pending eval case case-1" in pending.output
+
+        state["value"] = "stable"
+        checked = runner.invoke(app, _args(repo, "-q", "How many orders?", "--save-case"))
+        assert checked.exit_code == 0, checked.output
+        assert "Already guarded by eval case case-1" in checked.output
+        assert len(replaced) == 1
+
+    def test_a_probe_that_asked_a_clarification_is_not_saved(self, repo, monkeypatch):
+        """Its SQL rests on the agent's own guess, and an answer case fails when the agent asks."""
+        body = _completed_body()
+        body["clarifications"] = [{"question": "Which period do you mean?", "answer": None}]
+        _mock_api(monkeypatch, lambda request: httpx.Response(200, json=body))
+        calls = []
+        monkeypatch.setattr("cassis_cli.ontology.post_eval_case_create", lambda **kwargs: calls.append(kwargs))
+
+        result = runner.invoke(app, _args(repo, "-q", "How many orders?", "--save-case"))
+
+        assert result.exit_code == 0, result.output
+        assert calls == []
+        assert 'the agent asked "Which period do you mean?"' in result.output
+        assert "Write the question with that detail" in result.output
+
+    def test_a_successful_probe_suggests_keeping_it(self, repo, monkeypatch):
+        _mock_api(monkeypatch, lambda request: httpx.Response(200, json=_completed_body()))
+
+        result = runner.invoke(app, _args(repo, "-q", "How many orders?"))
+
+        assert result.exit_code == 0, result.output
+        assert "Keep it as an eval case with --save-case" in result.output
+
+    def test_a_probe_without_successful_sql_is_skipped(self, repo, monkeypatch):
+        _mock_api(monkeypatch, lambda request: httpx.Response(200, json=_completed_body(run_status="needs_input")))
+        calls = []
+        monkeypatch.setattr("cassis_cli.ontology.post_eval_case_create", lambda **kwargs: calls.append(kwargs))
+
+        result = runner.invoke(app, _args(repo, "-q", "How many orders?", "--save-case"))
+
+        assert result.exit_code == 0, result.output
+        assert calls == []
+        assert "Not saved as an eval case" in result.output
+
+    def test_json_carries_the_saved_case(self, repo, monkeypatch):
+        _mock_api(monkeypatch, lambda request: httpx.Response(200, json=_completed_body()))
+        monkeypatch.setattr("cassis_cli.ontology.post_eval_case_create", lambda **kwargs: {"id": "case-9"})
+
+        result = runner.invoke(app, _args(repo, "-q", "How many orders?", "--save-case", "--json"))
+
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)[0]["saved_case"] == {"id": "case-9"}

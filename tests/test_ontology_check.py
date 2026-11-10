@@ -459,6 +459,41 @@ class TestOntologyCheckEvalStage:
         assert "1 context quality warning(s)" in result.output  # the audit bucket is unchanged
         assert "Eval cases resolve" not in result.output
 
+    def test_coverage_warnings_print_apart_from_unresolved_cases(self, repo, monkeypatch):
+        (repo / "cassis" / "project.yml").write_text(f"cassis_format_version: 2\nproject_id: {_PROJECT_ID}\n")
+
+        def handler(request):
+            return httpx.Response(
+                200,
+                json={
+                    "passed": True,
+                    "file_count": 1,
+                    "title": "",
+                    "summary": "ok",
+                    "findings": [],
+                    "warnings": [
+                        {
+                            "stage": "evals",
+                            "path": None,
+                            "message": "[eval_coverage] Changed since the published context and read by no eval "
+                            "case: public.orders; keep a guard",
+                        },
+                    ],
+                    "references_checked": True,
+                    "eval_cases_checked": True,
+                },
+            )
+
+        _mock_api(monkeypatch, handler)
+
+        result = runner.invoke(app, ["context", "check", str(repo), "--api-key", "sk-k6-test"])
+
+        assert result.exit_code == 0, result.output
+        assert "1 change(s) no eval case guards" in result.output
+        assert "does not fully resolve" not in result.output
+        # Every case resolves: only a change lacks a guard.
+        assert "Eval cases resolve against this context" in result.output
+
     def test_clean_eval_stage_says_so(self, repo, monkeypatch):
         (repo / "cassis" / "project.yml").write_text(f"cassis_format_version: 2\nproject_id: {_PROJECT_ID}\n")
 

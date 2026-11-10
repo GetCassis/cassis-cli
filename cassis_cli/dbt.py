@@ -577,6 +577,7 @@ def _render_filed(record: "dict[str, Any]", *, app_url: str, project_id: str, er
         return
     filed = [f for f in findings if f.get("issue_outcome") in _ISSUE_STATES]
     skipped = [f for f in findings if f.get("issue_outcome") == "skipped_dismissed"]
+    pending = [f for f in findings if f.get("issue_outcome") == "pending_curation"]
     review = record.get("review")
     _render_review_coverage(review, err=err)
     if not findings:
@@ -584,7 +585,7 @@ def _render_filed(record: "dict[str, Any]", *, app_url: str, project_id: str, er
         return
     typer.echo(f"{len(filed)} finding(s) filed as issues:", err=err)
     for finding in sorted(filed, key=_by_reach):
-        link = f"{app_url.rstrip('/')}/context?projectId={project_id}&tab=review&issueId={finding.get('issue_id')}"
+        link = f"{app_url.rstrip('/')}/context?projectId={project_id}&tab=issues&issueId={finding.get('issue_id')}"
         state = _ISSUE_STATES[finding["issue_outcome"]]
         typer.echo(
             f"  {finding.get('issue_id')}  ({state})  {_subject(finding)}: {finding.get('change')}"
@@ -592,6 +593,11 @@ def _render_filed(record: "dict[str, Any]", *, app_url: str, project_id: str, er
             err=err,
         )
         typer.echo(f"    {link}", err=err)
+    if pending:
+        typer.echo(f"{len(pending)} finding(s) saved for issue curation:", err=err)
+        for finding in pending:
+            typer.echo(f"  {_subject(finding)}: {finding.get('change')}", err=err)
+        typer.echo(f"  Source observation: {record.get('id') or record.get('observation_id')}", err=err)
     if skipped:
         typer.echo(f"{len(skipped)} finding(s) skipped: their issues were dismissed.", err=err)
 

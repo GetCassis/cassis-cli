@@ -505,6 +505,9 @@ move. Same human opt-in, front-loaded:
    its owning layer immediately (§11). If filling shows the approved tree is wrong
    — a domain overloads, or wants to split — stop and return to 2 rather than keep
    filling into it.
+4. **Guard.** Each new domain gets at least one eval case, added before you open
+   the pull request: a question it answers, probed and kept as in §13. `cassis
+   context check` names the new domains and changed tables no case reads yet.
 
 ---
 
@@ -523,7 +526,16 @@ checkout:
   agent against your local files, to confirm a change actually *works* (e.g. a new
   column gets picked), not just that it validates.
 - `cassis eval run`: score the project's eval suite against your local files to
-  check the change for regressions before merging.
+  check the change for regressions before merging. `--changed` runs only the
+  cases the change affects, and names what no case covers.
+- Keep a guard: add an eval case for the question before you open the pull
+  request; Cassis checks it once the change is published. Every fix and every
+  new coverage gets one. `cassis context test -q "…" --save-case` keeps a
+  successful probe as a case (probing again updates it); `cassis eval add-case
+  --pending-change` adds one by hand. Until the change is published the case
+  is pending: other runs list it but count no verdict on it. A question the
+  agent has to ask a clarification about is no guard: write it with the detail
+  it lacks and probe it again.
 
 Merging the pull request syncs and publishes the context; nothing reaches
 production answers until then.
@@ -534,7 +546,11 @@ closing them by hand. Write one mention per issue in the PR description:
 `Fixes` are accepted too). `cassis issues show <id>` prints the exact line to
 copy, as `PR mention:`. Cassis resolves each mentioned issue when the pull
 request merges and the context is published, and records the pull request on
-the issue, so the resolution carries the change that earned it.
+the issue, so the resolution carries the change that earned it. Guard each
+fixed issue with a case for the question users were failing on: `get_issue`
+over MCP names those questions, and passing the issue (`--issue <id>`, or
+`issue_id` over MCP) makes the case wait for that issue's resolution, the
+publication that carries the fix.
 
 Resolving by hand is for outcomes that never go through a pull request:
 `cassis issues resolve <id>`, or `update_issue_status` over MCP. It needs the

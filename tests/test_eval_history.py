@@ -127,21 +127,155 @@ class TestEvalHistory:
         assert f"Case {CASE_ID}: Pit stops per team?" in out
         assert "noisy · pass rate 67% (2 of 3)" in out
         assert "2 configuration(s)" in out
-        assert "plan/execution 12.0s / 4.0s avg" in out
+        assert "answer 12.0s avg · query 4.0s avg" in out
         assert "1 configuration(s) with verdicts that differ" in out
         assert "divergences: wrong_filter ×1" in out
         assert "footprint: matched 2, diverged 1" in out
         # Groups keep arrival order (newest first) and name the configuration.
-        assert out.index("v3 · m · Cassis 8.23.0 · 2 run(s) · 1 passed") < out.index(
-            "feat/pit-stops · m · Cassis 8.22.0 · 1 run(s) · 1 passed"
+        assert out.index("v3 · m · Cassis 8.23.0 · 2 runs · 1 passed") < out.index(
+            "feat/pit-stops · m · Cassis 8.22.0 · 1 run · 1 passed"
         )
         assert "verdicts differ on an unchanged configuration" in out
         assert "2026-10-23 18:14" in out
         assert "wrong_filter" in out
         # A pass from another table set reads as an alternative path, not a defect.
         assert "alternative path" in out
-        assert "10.0s / 3.0s" in out
-        assert "20.0s total" in out  # the row without phase timings
+        assert "plan 10.0s · exec 3.0s" in out
+        assert "total 20.0s" in out  # the row without phase timings
+
+    def test_a_repeat_run_counts_as_one_run_with_its_attempts(self, monkeypatch):
+        # The server's shape: `runs[]` carries each run with its counts, the
+        # results carry the configuration key that groups runs.
+        def run(run_id, origin, label="v4"):
+            return {
+                "id": run_id,
+                "status": "completed",
+                "origin": origin,
+                "ontology_label": label,
+                "model": "claude-sonnet-5-5",
+                "app_version": "8.30.0",
+            }
+
+        results = [
+            _row(RUN_A, "passed", key="v4|s|8.30.0", label="v4", created_at="2026-11-04T10:00:00Z", attempt=1),
+            _row(RUN_A, "failed", key="v4|s|8.30.0", label="v4", created_at="2026-11-04T10:01:00Z", attempt=2),
+            _row(RUN_A, "passed", key="v4|s|8.30.0", label="v4", created_at="2026-11-04T10:02:00Z", attempt=3),
+            _row(RUN_B, "passed", key="h|s|8.30.0", label="feat/x", created_at="2026-11-03T10:00:00Z"),
+            _row(RUN_C, "passed", key="h|s|8.30.0", label="feat/x", created_at="2026-11-02T10:00:00Z"),
+        ]
+        for i, r in enumerate(results):
+            r["id"] = f"{r['run_id']}-{i}"
+
+        def entry(run_id, rows, passed, origin, label="v4"):
+            return {
+                "run_id": run_id,
+                "created_at": rows[0]["created_at"],
+                "result_ids": [r["id"] for r in rows],
+                "passed": passed,
+                "total": len(rows),
+                "expected_attempts": len(rows),
+                "run": run(run_id, origin, label),
+            }
+
+        history = {
+            **_HISTORY,
+            "results": results,
+            "runs": [
+                entry(RUN_A, results[:3], 2, "ci"),
+                entry(RUN_B, results[3:4], 1, "cli", "feat/x"),
+                entry(RUN_C, results[4:], 1, "scheduler", "feat/x"),
+            ],
+        }
+        _mock_history_api(monkeypatch, lambda request: httpx.Response(200, json=history))
+
+        result = runner.invoke(app, _history_args())
+
+        assert result.exit_code == 0, result.output
+        out = result.output
+        assert "v4 · claude-sonnet-5-5 · Cassis 8.30.0 · 1 run · 3 attempts · 2 passed · CI" in out
+        assert "attempt 3" in out
+        # Runs of one configuration from different origins name none.
+        assert "feat/x · claude-sonnet-5-5 · Cassis 8.30.0 · 2 runs · 2 passed\n" in out
+        assert "3 runs" not in out
+
+    def test_rows_print_their_error_note_and_deciding_rule(self, monkeypatch):
+        history = {
+            **_HISTORY,
+            "comparison": {"numeric": "exact", "ordered": False, "columns": "automatic", "allow_empty": False},
+            "results": [
+                _row(
+                    RUN_A,
+                    "failed",
+                    key="k",
+                    created_at="2026-11-04T10:00:00Z",
+                    error="Row count mismatch: 3 vs 4",
+                    comparison_rule="row_count",
+                ),
+                _row(
+                    RUN_B,
+                    "passed",
+                    key="k",
+                    created_at="2026-11-03T10:00:00Z",
+                    comparison_applied=False,
+                    comparison_note="Not applied: SQL results were not executed",
+                ),
+            ],
+        }
+        _mock_history_api(monkeypatch, lambda request: httpx.Response(200, json=history))
+
+        result = runner.invoke(app, _history_args())
+
+        assert result.exit_code == 0, result.output
+        assert "Comparison: exact numbers" in result.output
+        assert "Row count mismatch: 3 vs 4" in result.output
+        assert "Failed on row count" in result.output
+        assert "Result comparison not applied: SQL results were not executed" in result.output
+
+    def test_rows_print_one_timing_format_under_a_header_and_no_bare_dash(self, monkeypatch):
+        history = {
+            **_HISTORY,
+            "results": [
+                _row(RUN_A, "passed", key="k", created_at="2026-11-04T10:00:00Z", plan_seconds=9.4),
+                _row(RUN_B, "passed", key="k", created_at="2026-11-03T10:00:00Z", duration_seconds=None),
+                _row(RUN_C, "passed", key="j", created_at="2026-11-02T10:00:00Z", duration_seconds=None),
+            ],
+        }
+        _mock_history_api(monkeypatch, lambda request: httpx.Response(200, json=history))
+
+        result = runner.invoke(app, _history_args())
+
+        assert result.exit_code == 0, result.output
+        lines = result.output.splitlines()
+        # The group with a timing names its one column; the bare group prints none.
+        assert lines.count("    status            date              timing") == 1
+        assert "  ✓ passed            2026-11-04 10:00  plan 9.4s" in lines
+        assert "  ✓ passed            2026-11-03 10:00" in lines
+        assert "  ✓ passed            2026-11-02 10:00" in lines
+        assert " - " not in result.output and not any(line.endswith(" -") for line in lines)
+
+    def test_a_row_from_a_change_scoped_run_says_how_much_it_covered(self, monkeypatch):
+        rows = [{"case_id": CASE_ID, "selected": True}] + [{"case_id": f"c{i}", "selected": False} for i in range(14)]
+        result_row = _row(RUN_A, "passed", key="k", created_at="2026-11-04T10:00:00Z")
+        history = {
+            **_HISTORY,
+            "results": [result_row],
+            "runs": [
+                {
+                    "run_id": RUN_A,
+                    "created_at": "2026-11-04T10:00:00Z",
+                    "result_ids": [result_row["id"]],
+                    "passed": 1,
+                    "total": 1,
+                    "run": {"id": RUN_A, "selection": {"mode": "changed", "cases": rows}},
+                }
+            ],
+        }
+        _mock_history_api(monkeypatch, lambda request: httpx.Response(200, json=history))
+
+        result = runner.invoke(app, _history_args())
+
+        assert result.exit_code == 0, result.output
+        assert "· run covered 1 of 15 cases (affected by a context change)" in result.output
 
     def test_no_results_says_so(self, monkeypatch):
         empty = {**_HISTORY, "health": {**_HISTORY["health"], "total": 0, "passed": 0}, "results": []}
