@@ -17,7 +17,6 @@ REPORT = {
             "confidence": "uncertain",
             "title": "Wrong period",
             "explanation": "The calendar differs.",
-            "destination": "customer",
             "next_step": "Confirm the fiscal year",
             "evidence": [{"document_id": "trace:message1:0", "quote": "April"}],
         }
@@ -69,7 +68,7 @@ def test_show_includes_conversation_feedback_and_analysis_without_full_trace(mon
         "Revenue is 12",
         "Wrong period",
         "Check the period",
-        "Confirm the fiscal year",
+        "Next step: Confirm the fiscal year",
         "trace:message1:0",
         "--trace",
     ):
@@ -77,6 +76,15 @@ def test_show_includes_conversation_feedback_and_analysis_without_full_trace(mon
     assert "x" * 1000 not in result.output
     assert len(requests) == 1 and requests[0].method == "GET"
     assert requests[0].url.path == f"/api/ci/projects/{PROJECT}/chats/{CHAT}"
+
+
+def test_analysis_only_reads_final_observation_schema(monkeypatch):
+    mock(monkeypatch, lambda request: httpx.Response(200, json=DETAIL))
+    result = runner.invoke(app, args("show", CHAT, "--analysis-only"))
+    assert result.exit_code == 0, result.output
+    assert "Next step: Confirm the fiscal year" in result.output
+    assert "[trace:message1:0] April" in result.output
+    assert "Revenue is 12" not in result.output
 
 
 def test_trace_preview_full_entry_and_json(monkeypatch):

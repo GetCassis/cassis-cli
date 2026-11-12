@@ -131,7 +131,7 @@ def _analysis(view: dict[str, Any]) -> None:
     for index, obs in enumerate(report["observations"], 1):
         typer.echo(f"\n{index}. {obs['title']} [{obs['kind']} / {obs['confidence']}]")
         typer.echo(obs["explanation"])
-        typer.echo(f"Next step ({obs['destination']}): {obs['next_step']}")
+        typer.echo(f"Next step: {obs['next_step']}")
         for citation in obs["evidence"]:
             typer.echo(f"  [{citation['document_id']}] {citation['quote']}")
     for issue in view.get("issues", []):

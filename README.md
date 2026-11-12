@@ -383,6 +383,7 @@ The entry identifiers match the analysis's trace references. `--json` returns th
 full messages and traces without those display limits; `--analysis-only --json`
 returns the analysis view. If a retry failed, the previous completed report is
 shown with the failed status. Missing analyses are reported explicitly.
+Use version 3.6.1 or later to read observations that no longer include a destination field.
 
 Members can read their own chats; administrators can read chats in accessible
 projects. API keys scoped to a project cannot reach another one. `--app-url`

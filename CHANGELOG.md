@@ -3,6 +3,12 @@
 Versions match the releases on [PyPI](https://pypi.org/project/cassis-cli/); dates are the
 PyPI upload date.
 
+## 3.6.1 (unreleased)
+
+### Fixed
+
+- `cassis chats show` and `--analysis-only` display saved observations and their next steps without requiring the removed destination field.
+
 ## 3.6.0 (2026-11-10)
 
 ### Added
