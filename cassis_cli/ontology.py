@@ -74,7 +74,7 @@ def check(
         None,
         "--api-key",
         envvar="CASSIS_API_KEY",
-        help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+        help="Automation API key; overrides saved login. For interactive access, run cassis login.",
     ),
     api_url: str = typer.Option(
         DEFAULT_API_URL,
@@ -94,8 +94,8 @@ def check(
 
     Runs the same checks as the Cassis GitHub PR check (YAML parsing,
     round-trip, import validation), then prints advisory quality warnings
-    (unassigned tables, broken joins/metrics, missing descriptions) for a
-    tree that parsed. When the checkout is bound to a project
+    (unassigned tables, broken joins/metrics, tables without a description)
+    for a tree that parsed. When the checkout is bound to a project
     (``project.yml``, ``--project``, or ``CASSIS_PROJECT_ID``), the tree is
     additionally cross-checked against the project's source schema (unmatched
     references print as warnings) and against its eval suite (cases whose
@@ -103,7 +103,7 @@ def check(
     fail the check or change the exit code. Exits 0 when valid, 1 when validation fails, 2 on usage
     errors, 3 on transport/API errors.
     """
-    api_key = _require_api_key(api_key)
+    api_key = _require_api_key(api_key, api_url)
     files, base_path = _collect_tree(path, base_path)
 
     # Soft resolution: an unbound checkout is not an error — the check falls
@@ -213,7 +213,7 @@ def pull(
         None,
         "--api-key",
         envvar="CASSIS_API_KEY",
-        help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+        help="Automation API key; overrides saved login. For interactive access, run cassis login.",
     ),
     api_url: str = typer.Option(
         DEFAULT_API_URL,
@@ -248,7 +248,7 @@ def pull(
     git diff before committing. Exits 0 on success, 2 on usage errors, 3 on
     transport/API errors.
     """
-    api_key = _require_api_key(api_key)
+    api_key = _require_api_key(api_key, api_url)
     base_path = base_path.strip().strip("/")
     if not base_path:
         typer.secho("--base-path must not be empty.", fg=typer.colors.RED, err=True)
@@ -339,7 +339,7 @@ def upload(
         None,
         "--api-key",
         envvar="CASSIS_API_KEY",
-        help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+        help="Automation API key; overrides saved login. For interactive access, run cassis login.",
     ),
     api_url: str = typer.Option(
         DEFAULT_API_URL,
@@ -370,7 +370,7 @@ def upload(
     1 when the tree fails validation, 2 on usage errors (including uncommitted
     changes under the base path), 3 on transport/API errors.
     """
-    api_key = _require_api_key(api_key)
+    api_key = _require_api_key(api_key, api_url)
     files, base_path = _collect_tree(path, base_path)
     head = _require_committed_tree(path, base_path, files)
     project_id = _resolve_project_id(project_id, path / Path(base_path))
@@ -430,7 +430,7 @@ def fmt(
         None,
         "--api-key",
         envvar="CASSIS_API_KEY",
-        help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+        help="Automation API key; overrides saved login. For interactive access, run cassis login.",
     ),
     api_url: str = typer.Option(
         DEFAULT_API_URL,
@@ -460,7 +460,7 @@ def fmt(
     (1 with --check when changes are needed), 1 when the tree cannot be
     parsed, 2 on usage errors, 3 on transport/API errors.
     """
-    api_key = _require_api_key(api_key)
+    api_key = _require_api_key(api_key, api_url)
     files, base_path = _collect_tree(path, base_path)
     ontology_dir = path / Path(base_path)
 
@@ -562,7 +562,7 @@ def test(
         None,
         "--api-key",
         envvar="CASSIS_API_KEY",
-        help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+        help="Automation API key; overrides saved login. For interactive access, run cassis login.",
     ),
     api_url: str = typer.Option(
         DEFAULT_API_URL,
@@ -603,7 +603,7 @@ def test(
     when every probe completed (whatever its outcome), 1 when the tree is
     invalid or a probe failed, 2 on usage errors, 3 on transport errors.
     """
-    api_key = _require_api_key(api_key)
+    api_key = _require_api_key(api_key, api_url)
     files, base_path = _collect_tree(path, base_path)
     project_id = _resolve_project_id(project_id, path / Path(base_path))
 

@@ -131,7 +131,7 @@ def status(
         None,
         "--api-key",
         envvar="CASSIS_API_KEY",
-        help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+        help="Automation API key; overrides saved login. For interactive access, run cassis login.",
     ),
     api_url: str = typer.Option(
         DEFAULT_API_URL,
@@ -163,7 +163,7 @@ def status(
     then exits 0. Exits 0 on success, 2 on usage errors, 3 on transport/API
     errors or a --watch timeout.
     """
-    api_key = require_api_key(api_key)
+    api_key = require_api_key(api_key, api_url)
     project_id = resolve_project_id(project_id, path / base_path, quiet=json_output)
     head = _git(path, "rev-parse", "HEAD")
 

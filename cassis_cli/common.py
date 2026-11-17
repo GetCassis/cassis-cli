@@ -472,17 +472,22 @@ def resolve_project_id(
     return project_id
 
 
-def require_api_key(api_key: Optional[str]) -> str:
-    """Exit 2 (usage) when no API key was provided."""
-    if not api_key:
-        typer.secho(
-            "No API key. Set CASSIS_API_KEY or pass --api-key "
-            "(create one in Cassis under Organization settings -> API keys).",
-            fg=typer.colors.RED,
-            err=True,
-        )
-        raise typer.Exit(EXIT_USAGE)
-    return api_key
+def require_api_key(api_key: Optional[str], api_url: str = "https://app.getcassis.com") -> str:
+    """Explicit keys win; otherwise return a marker resolved on every API call."""
+    if api_key is not None:
+        return api_key
+    from cassis_cli.credentials import CredentialError, CredentialStore, SavedLogin
+
+    try:
+        store = CredentialStore(api_url)
+        with store.locked():
+            if store.read():
+                return SavedLogin(store.server)
+        message = "Run cassis login for this server, or set CASSIS_API_KEY / pass --api-key for automation."
+    except CredentialError as exc:
+        message = str(exc)
+    typer.secho("No API key or saved login. " + message, fg=typer.colors.RED, err=True)
+    raise typer.Exit(EXIT_USAGE)
 
 
 def collect_tree(path: Path, base_path: str) -> "tuple[dict[str, str], str]":

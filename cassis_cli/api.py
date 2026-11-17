@@ -8,9 +8,15 @@ from urllib.parse import urlencode
 
 import httpx
 from cassis_cli import __version__
+from cassis_cli.credentials import CredentialError
+from cassis_cli.credentials import authorization as _credential_authorization
 
 DEFAULT_API_URL = "https://app.getcassis.com"
 TIMEOUT_SECONDS = 60.0
+_REJECTED_CREDENTIAL = (
+    "Cassis rejected the credential (invalid or expired, or revoked). "
+    "For saved login, run cassis logout then cassis login; otherwise check the API key."
+)
 
 # Whole-tree endpoints (check, fmt, import) parse and re-serialize every file
 # server-side, so their duration scales with the ontology: a few hundred files
@@ -79,8 +85,15 @@ def _client(*, timeout: float = TIMEOUT_SECONDS, transport: Optional[httpx.BaseT
     )
 
 
-class ApiError(Exception):
+class ApiError(CredentialError):
     """Transport or HTTP-level failure talking to the Cassis API."""
+
+
+def authorization(server: str, credential: str) -> str:
+    try:
+        return _credential_authorization(server, credential)
+    except CredentialError as exc:
+        raise AuthError(str(exc)) from exc
 
 
 class AuthError(ApiError):
@@ -146,7 +159,7 @@ def _project_scope_error(response: httpx.Response) -> ApiError:
     prefix = f"{detail} " if isinstance(detail, str) and detail else ""
     return ApiError(
         f"{prefix}(HTTP {response.status_code}). Check --project and that "
-        "the API key belongs to the project's organization and can edit it."
+        "the acting account belongs to the project's organization and has permission."
     )
 
 
@@ -191,13 +204,13 @@ def post_ontology_check(
             response = client.post(
                 url,
                 json={"files": files},
-                headers={"Authorization": f"Bearer {api_key}"},
+                headers={"Authorization": authorization(api_url, api_key)},
             )
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
 
     if response.status_code == 401:
-        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+        raise AuthError(_REJECTED_CREDENTIAL)
     if project_id and response.status_code in (403, 404):
         raise _project_scope_error(response)
     if response.status_code >= 400:
@@ -237,13 +250,13 @@ def post_ontology_import(
             response = client.post(
                 url,
                 json=body,
-                headers={"Authorization": f"Bearer {api_key}"},
+                headers={"Authorization": authorization(api_url, api_key)},
             )
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
 
     if response.status_code == 401:
-        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+        raise AuthError(_REJECTED_CREDENTIAL)
     if response.status_code == 400:
         raise UploadValidationError(str(_detail_or_text(response)))
     if response.status_code == 426:  # this CLI is too old for the server's ontology format
@@ -280,12 +293,12 @@ def get_ontology_export(
         # server the better part of a minute, so the default budget is the
         # thing that breaks first — use the tree ceiling.
         with _client(timeout=ONTOLOGY_TREE_TIMEOUT_SECONDS, transport=transport) as client:
-            response = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+            response = client.get(url, headers={"Authorization": authorization(api_url, api_key)})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
 
     if response.status_code == 401:
-        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+        raise AuthError(_REJECTED_CREDENTIAL)
     if response.status_code in (403, 404):
         raise _project_scope_error(response)
     if response.status_code >= 400:
@@ -306,12 +319,12 @@ def get_projects(
     url = api_url.rstrip("/") + "/api/ci/projects"
     try:
         with _client(transport=transport) as client:
-            response = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+            response = client.get(url, headers={"Authorization": authorization(api_url, api_key)})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
 
     if response.status_code == 401:
-        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+        raise AuthError(_REJECTED_CREDENTIAL)
     if response.status_code >= 400:
         raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
     result = _parse_json_response(response, url)
@@ -331,12 +344,12 @@ def get_project_status(
     url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/status"
     try:
         with _client(transport=transport) as client:
-            response = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+            response = client.get(url, headers={"Authorization": authorization(api_url, api_key)})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
 
     if response.status_code == 401:
-        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+        raise AuthError(_REJECTED_CREDENTIAL)
     if response.status_code in (403, 404):
         raise _project_scope_error(response)
     if response.status_code >= 400:
@@ -362,12 +375,12 @@ def get_schema_export(
     url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/schema"
     try:
         with _client(transport=transport) as client:
-            response = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+            response = client.get(url, headers={"Authorization": authorization(api_url, api_key)})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
 
     if response.status_code == 401:
-        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+        raise AuthError(_REJECTED_CREDENTIAL)
     # "No source schema" is the marker the server's export endpoint puts in its
     # 404 detail (backend endpoints/ci.py::export_source_schema — reworded only
     # with a paired CLI release). Without this routing, a schema-less project
@@ -415,7 +428,7 @@ def _raise_for_schema_plan_status(response: httpx.Response) -> None:
     A bare FastAPI 404 means the server predates schema plans altogether.
     """
     if response.status_code == 401:
-        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+        raise AuthError(_REJECTED_CREDENTIAL)
     if response.status_code == 409:
         raise SchemaPlanConflictError(str(_detail_or_text(response)))
     if response.status_code == 404:
@@ -458,7 +471,7 @@ def post_schema_plan(
             response = client.post(
                 url,
                 json={"ddl": ddl, "complete_source": complete_source},
-                headers={"Authorization": f"Bearer {api_key}"},
+                headers={"Authorization": authorization(api_url, api_key)},
             )
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
@@ -480,7 +493,7 @@ def post_schema_plan_warehouse(
     url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/schema/plans/warehouse"
     try:
         with _client(transport=transport) as client:
-            response = client.post(url, headers={"Authorization": f"Bearer {api_key}"})
+            response = client.post(url, headers={"Authorization": authorization(api_url, api_key)})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
     return _schema_plan_response(response, url)
@@ -517,7 +530,7 @@ def post_schema_plan_preview(
             response = client.post(
                 url,
                 json={"ddl": ddl, "complete_source": complete_source},
-                headers={"Authorization": f"Bearer {api_key}"},
+                headers={"Authorization": authorization(api_url, api_key)},
             )
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
@@ -535,7 +548,7 @@ def post_schema_plan_preview_warehouse(
     url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/schema/plans/preview/warehouse"
     try:
         with _client(timeout=ONTOLOGY_TREE_TIMEOUT_SECONDS, transport=transport) as client:
-            response = client.post(url, headers={"Authorization": f"Bearer {api_key}"})
+            response = client.post(url, headers={"Authorization": authorization(api_url, api_key)})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
     return _schema_plan_preview_response(response, url)
@@ -553,7 +566,7 @@ def get_schema_plan(
     url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/schema/plans/{plan_id}"
     try:
         with _client(transport=transport) as client:
-            response = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+            response = client.get(url, headers={"Authorization": authorization(api_url, api_key)})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
     return _schema_plan_response(response, url)
@@ -571,7 +584,7 @@ def get_schema_plan_checkout(
     url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/schema/plans/{plan_id}/checkout"
     try:
         with _client(timeout=ONTOLOGY_TREE_TIMEOUT_SECONDS, transport=transport) as client:
-            response = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+            response = client.get(url, headers={"Authorization": authorization(api_url, api_key)})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
     _raise_for_schema_plan_status(response)
@@ -593,7 +606,7 @@ def post_schema_plan_apply(
     url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/schema/plans/{plan_id}/apply"
     try:
         with _client(transport=transport) as client:
-            response = client.post(url, headers={"Authorization": f"Bearer {api_key}"})
+            response = client.post(url, headers={"Authorization": authorization(api_url, api_key)})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
     return _schema_plan_response(response, url)
@@ -649,7 +662,7 @@ def post_eval_run_start(
         # May carry the whole ontology tree in `files` — same budget as the
         # other whole-tree endpoints.
         with _client(timeout=ONTOLOGY_TREE_TIMEOUT_SECONDS, transport=transport) as client:
-            response = client.post(url, json=body, headers={"Authorization": f"Bearer {api_key}"})
+            response = client.post(url, json=body, headers={"Authorization": authorization(api_url, api_key)})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
 
@@ -661,7 +674,7 @@ def post_eval_run_start(
             f"No published context version {base_version_id} in this project (--base takes a published version id)."
         )
     if response.status_code == 401:
-        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+        raise AuthError(_REJECTED_CREDENTIAL)
     if response.status_code == 400:
         raise EvalStartValidationError(_detail_or_text(response))
     if response.status_code == 409:
@@ -736,12 +749,12 @@ def post_eval_case_create(
         body["issue_id"] = issue_id
     try:
         with _client(transport=transport) as client:
-            response = client.post(url, json=body, headers={"Authorization": f"Bearer {api_key}"})
+            response = client.post(url, json=body, headers={"Authorization": authorization(api_url, api_key)})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
 
     if response.status_code == 401:
-        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+        raise AuthError(_REJECTED_CREDENTIAL)
     if response.status_code == 409:
         raise EvalCaseExistsError(str(_detail_or_text(response)))
     if response.status_code == 400:
@@ -802,12 +815,12 @@ def post_eval_case_replace(
         body["issue_id"] = issue_id
     try:
         with _client(transport=transport) as client:
-            response = client.post(url, json=body, headers={"Authorization": f"Bearer {api_key}"})
+            response = client.post(url, json=body, headers={"Authorization": authorization(api_url, api_key)})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
 
     if response.status_code == 401:
-        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+        raise AuthError(_REJECTED_CREDENTIAL)
     if response.status_code == 409:
         raise EvalCaseReplacedError(str(_detail_or_text(response)))
     if response.status_code == 400:
@@ -862,11 +875,11 @@ def get_eval_cases(
         url += "?" + urlencode(query)
     try:
         with _client(transport=transport) as client:
-            response = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+            response = client.get(url, headers={"Authorization": authorization(api_url, api_key)})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
     if response.status_code == 401:
-        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+        raise AuthError(_REJECTED_CREDENTIAL)
     if response.status_code == 404 and _is_branch_not_found(_detail_or_text(response)):
         raise EvalBranchNotFoundError(_detail_or_text(response))
     if response.status_code in (403, 404):
@@ -891,11 +904,11 @@ def get_eval_case_history(
     url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/eval/cases/{case_id}/history"
     try:
         with _client(transport=transport) as client:
-            response = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+            response = client.get(url, headers={"Authorization": authorization(api_url, api_key)})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
     if response.status_code == 401:
-        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+        raise AuthError(_REJECTED_CREDENTIAL)
     # Same exact-match wire contract as `delete_eval_case`: a missing case
     # (exit 1) is not a project-scope 404 (exit 3).
     if response.status_code == 404 and _detail_or_text(response) == "Eval case not found":
@@ -922,12 +935,12 @@ def delete_eval_case(
     url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/eval/cases/{case_id}"
     try:
         with _client(transport=transport) as client:
-            response = client.delete(url, headers={"Authorization": f"Bearer {api_key}"})
+            response = client.delete(url, headers={"Authorization": authorization(api_url, api_key)})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
 
     if response.status_code == 401:
-        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+        raise AuthError(_REJECTED_CREDENTIAL)
     # Exact-match wire contract with the DELETE endpoint's 404 detail (see
     # `delete_eval_case` in backend/app/endpoints/ci.py): it distinguishes a
     # missing case (exit 1) from a project-scope 404 (exit 3).
@@ -943,12 +956,15 @@ def _get_eval_json(url: str, api_key: str, transport: Optional[httpx.BaseTranspo
     """GET an eval-run URL with the shared error mapping."""
     try:
         with _client(transport=transport) as client:
-            response = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+            response = client.get(
+                url,
+                headers={"Authorization": authorization(str(httpx.URL(url).copy_with(path="/", query=None)), api_key)},
+            )
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
 
     if response.status_code == 401:
-        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+        raise AuthError(_REJECTED_CREDENTIAL)
     if response.status_code == 404 and _detail_or_text(response) == _EVAL_RUN_NOT_FOUND:
         raise EvalRunNotFoundError("No such eval run in this project (wrong id, or another project's run?).")
     if response.status_code in (403, 404):
@@ -1002,11 +1018,13 @@ def get_eval_runs(
     url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/eval/runs"
     try:
         with _client(transport=transport) as client:
-            response = client.get(url, headers={"Authorization": f"Bearer {api_key}"}, params={"limit": limit})
+            response = client.get(
+                url, headers={"Authorization": authorization(api_url, api_key)}, params={"limit": limit}
+            )
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
     if response.status_code == 401:
-        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+        raise AuthError(_REJECTED_CREDENTIAL)
     # A server without the route answers the framework's own "Not Found"
     # (a GET on the start route's path is a 405 there, not a 404).
     if response.status_code in (404, 405) and _detail_or_text(response) in ("Not Found", "Method Not Allowed"):
@@ -1037,11 +1055,11 @@ def get_eval_run_comparison(
     url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/eval/runs/{run_id}/comparison"
     try:
         with _client(transport=transport) as client:
-            response = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+            response = client.get(url, headers={"Authorization": authorization(api_url, api_key)})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
     if response.status_code == 401:
-        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+        raise AuthError(_REJECTED_CREDENTIAL)
     # A server without the route answers the framework's own "Not Found",
     # distinct from the "Eval run not found" a real lookup returns.
     if response.status_code == 404 and _detail_or_text(response) == "Not Found":
@@ -1073,11 +1091,11 @@ def get_eval_spend(
     url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/eval/spend"
     try:
         with _client(transport=transport) as client:
-            response = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+            response = client.get(url, headers={"Authorization": authorization(api_url, api_key)})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
     if response.status_code == 401:
-        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+        raise AuthError(_REJECTED_CREDENTIAL)
     # A server without the route answers the framework's own "Not Found".
     if response.status_code == 404 and _detail_or_text(response) == "Not Found":
         raise EvalSpendUnsupportedError("This Cassis server does not report eval spend yet; it needs a newer server.")
@@ -1102,11 +1120,11 @@ def get_eval_health(
     url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/eval/health"
     try:
         with _client(transport=transport) as client:
-            response = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+            response = client.get(url, headers={"Authorization": authorization(api_url, api_key)})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
     if response.status_code == 401:
-        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+        raise AuthError(_REJECTED_CREDENTIAL)
     # A server without the route answers the framework's own "Not Found".
     if response.status_code == 404 and _detail_or_text(response) == "Not Found":
         raise ApiError("This Cassis server does not report suite health yet; it needs a newer server.")
@@ -1132,11 +1150,11 @@ def post_eval_run_cancel(
     url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/eval/runs/{run_id}/cancel"
     try:
         with _client(transport=transport) as client:
-            response = client.post(url, headers={"Authorization": f"Bearer {api_key}"})
+            response = client.post(url, headers={"Authorization": authorization(api_url, api_key)})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
     if response.status_code == 401:
-        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+        raise AuthError(_REJECTED_CREDENTIAL)
     if response.status_code in (403, 404):
         raise _project_scope_error(response)
     if response.status_code >= 400:
@@ -1168,12 +1186,16 @@ def _get_issue_json(
     """
     try:
         with _client(transport=transport) as client:
-            response = client.get(url, params=params, headers={"Authorization": f"Bearer {api_key}"})
+            response = client.get(
+                url,
+                params=params,
+                headers={"Authorization": authorization(str(httpx.URL(url).copy_with(path="/", query=None)), api_key)},
+            )
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
 
     if response.status_code == 401:
-        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+        raise AuthError(_REJECTED_CREDENTIAL)
     # Exact-match wire contract with the issue endpoints' 404 detail (see the
     # issue routes in backend/app/endpoints/ci.py): it distinguishes a missing
     # issue, occurrence or run (exit 1) from a project-scope 404 (exit 3).
@@ -1272,13 +1294,13 @@ def post_issue_status(
             response = client.post(
                 url,
                 json={"status": status, "reason": reason, "detail": detail, "confirm_published": confirm_published},
-                headers={"Authorization": f"Bearer {api_key}"},
+                headers={"Authorization": authorization(api_url, api_key)},
             )
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
 
     if response.status_code == 401:
-        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+        raise AuthError(_REJECTED_CREDENTIAL)
     # Same exact-match wire contract as the issue GETs above.
     if response.status_code == 404 and _detail_or_text(response) == "Issue not found":
         raise IssueNotFoundError(f"No issue {issue_id} in this project (or occurrence not found).")
@@ -1306,13 +1328,13 @@ def post_ontology_fmt(
             response = client.post(
                 url,
                 json={"files": files},
-                headers={"Authorization": f"Bearer {api_key}"},
+                headers={"Authorization": authorization(api_url, api_key)},
             )
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
 
     if response.status_code == 401:
-        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+        raise AuthError(_REJECTED_CREDENTIAL)
     if response.status_code >= 400:
         raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
     result = _parse_json_response(response, url)
@@ -1363,13 +1385,13 @@ def post_ontology_test(
             response = client.post(
                 url,
                 json={"files": files, "question": question},
-                headers={"Authorization": f"Bearer {api_key}"},
+                headers={"Authorization": authorization(api_url, api_key)},
             )
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
 
     if response.status_code == 401:
-        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+        raise AuthError(_REJECTED_CREDENTIAL)
     if response.status_code == 400:
         raise OntologyTestValidationError(_detail_or_text(response))
     if response.status_code == 402:
@@ -1412,12 +1434,12 @@ def post_issue_analysis_start(
     url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/issue-analysis/runs"
     try:
         with _client(transport=transport) as client:
-            response = client.post(url, headers={"Authorization": f"Bearer {api_key}"})
+            response = client.post(url, headers={"Authorization": authorization(api_url, api_key)})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
 
     if response.status_code == 401:
-        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+        raise AuthError(_REJECTED_CREDENTIAL)
     if response.status_code == 409:
         raise IssueAnalysisActiveError(
             "An issue analysis is already running for this project — wait for it to finish, "
@@ -1468,11 +1490,11 @@ def post_issue_analysis_cancel(
     url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/issue-analysis/runs/{run_id}/cancel"
     try:
         with _client(transport=transport) as client:
-            response = client.post(url, headers={"Authorization": f"Bearer {api_key}"})
+            response = client.post(url, headers={"Authorization": authorization(api_url, api_key)})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
     if response.status_code == 401:
-        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+        raise AuthError(_REJECTED_CREDENTIAL)
     # Same exact-match contract as `get_issue_analysis_run`: a missing run is
     # not a project-scope problem.
     if response.status_code == 404 and _detail_or_text(response) == "Issue-analysis run not found":
@@ -1497,7 +1519,7 @@ _DBT_UPLOAD_NOT_FOUND = "dbt upload not found"
 def _raise_for_dbt_status(response: httpx.Response) -> None:
     """Map the dbt routes' error statuses to the CLI's exceptions; return on 2xx."""
     if response.status_code == 401:
-        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+        raise AuthError(_REJECTED_CREDENTIAL)
     if response.status_code in (400, 413, 422):
         raise DbtUploadRejectedError(_readable_detail(_detail_or_text(response)))
     if response.status_code == 404:
@@ -1555,7 +1577,9 @@ def post_dbt_observation(
     multipart = {name[: -len(".json")]: (f"{name}.gz", content, "application/gzip") for name, content in files.items()}
     try:
         with _client(timeout=ONTOLOGY_TREE_TIMEOUT_SECONDS, transport=transport) as client:
-            response = client.post(url, files=multipart, data=fields, headers={"Authorization": f"Bearer {api_key}"})
+            response = client.post(
+                url, files=multipart, data=fields, headers={"Authorization": authorization(api_url, api_key)}
+            )
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
     return _dbt_observation_response(response, url)
@@ -1573,7 +1597,7 @@ def get_dbt_observation(
     url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/dbt/observations/{observation_id}"
     try:
         with _client(transport=transport) as client:
-            response = client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+            response = client.get(url, headers={"Authorization": authorization(api_url, api_key)})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
     return _dbt_observation_response(response, url)
@@ -1598,11 +1622,11 @@ def get_chats(
         url += f"/{chat_id}"
     try:
         with _client(transport=transport) as client:
-            response = client.get(url, params=params, headers={"Authorization": f"Bearer {api_key}"})
+            response = client.get(url, params=params, headers={"Authorization": authorization(api_url, api_key)})
     except httpx.HTTPError as exc:
         raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
     if response.status_code == 401:
-        raise AuthError("The Cassis API rejected the API key (invalid or expired).")
+        raise AuthError(_REJECTED_CREDENTIAL)
     if response.status_code == 404 and chat_id and _detail_or_text(response) == "Chat not found":
         raise ChatNotFoundError("Conversation not found or not accessible to this API key.")
     if response.status_code in (403, 404):

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import typer
 from cassis_cli import __version__
+from cassis_cli.auth import app as auth_app
+from cassis_cli.auth import login, logout
 from cassis_cli.chats import app as chats_app
 from cassis_cli.dbt import app as dbt_app
 from cassis_cli.eval import app as eval_app
@@ -31,6 +33,9 @@ app.add_typer(dbt_app, name="dbt")
 app.add_typer(projects_app, name="projects")
 app.add_typer(issues_app, name="issues")
 app.add_typer(chats_app, name="chats")
+app.add_typer(auth_app, name="auth")
+app.command()(login)
+app.command()(logout)
 app.command()(status)
 app.command()(verify)
 

@@ -1,4 +1,4 @@
-"""`cassis projects` — discover the projects an API key can reach.
+"""`cassis projects` — discover the projects the acting account can reach.
 
 Every other CI route is project-scoped, so the very first thing a pipeline or
 checkout agent needs is a project id. `projects list` answers that from the
@@ -14,7 +14,7 @@ import typer
 from cassis_cli.api import DEFAULT_API_URL, ApiError, AuthError, get_projects
 from cassis_cli.common import EXIT_OK, EXIT_TRANSPORT, require_api_key
 
-app = typer.Typer(help="Discover the projects this API key can reach.")
+app = typer.Typer(help="Discover the projects the acting account can reach.")
 
 
 @app.command(name="list")
@@ -23,7 +23,7 @@ def list_projects(
         None,
         "--api-key",
         envvar="CASSIS_API_KEY",
-        help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+        help="Automation API key; overrides saved login. For interactive access, run cassis login.",
     ),
     api_url: str = typer.Option(
         DEFAULT_API_URL,
@@ -33,14 +33,14 @@ def list_projects(
     ),
     json_output: bool = typer.Option(False, "--json", help="Print the raw JSON response."),
 ) -> None:
-    """List the projects available to the API key.
+    """List the projects available to the acting account.
 
     Prints each project's id (what --project and CASSIS_PROJECT_ID take), name,
     published context version, and data-source dialect. A schema-only source
     (no connection) is marked "not executable": SQL is generated but never run.
     Exits 0 on success, 2 on usage errors, 3 on transport/API errors.
     """
-    api_key = require_api_key(api_key)
+    api_key = require_api_key(api_key, api_url)
 
     try:
         projects = get_projects(api_url=api_url, api_key=api_key)
@@ -53,7 +53,7 @@ def list_projects(
         raise typer.Exit(EXIT_OK)
 
     if not projects:
-        typer.echo("No projects visible to this API key.")
+        typer.echo("No projects visible to this account.")
         raise typer.Exit(EXIT_OK)
 
     for project in projects:

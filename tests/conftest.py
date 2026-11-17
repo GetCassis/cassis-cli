@@ -31,3 +31,14 @@ def commit_all():
         return _git(path, "rev-parse", "HEAD")
 
     return commit
+
+
+@pytest.fixture(autouse=True)
+def _no_real_credentials(monkeypatch, tmp_path):
+    from cassis_cli import credentials
+
+    def unavailable():
+        raise credentials.CredentialError("No OS credential store in tests.")
+
+    monkeypatch.setattr(credentials, "_keyring", unavailable)
+    monkeypatch.setattr(credentials, "user_data_dir", lambda *a, **kw: str(tmp_path / "credentials"))

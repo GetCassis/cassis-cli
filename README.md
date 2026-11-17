@@ -2,7 +2,7 @@
 
 Validate, test and evaluate your context from your terminal, then publish it. The same commands gate your pull requests in CI:
 
-- `cassis context check` validates the context files in your repository with the exact same checks as the Cassis GitHub PR check (YAML parsing, round-trip, import validation), so you can gate merges in any CI system, not just GitHub. It then prints advisory **context quality warnings** for a tree that parsed: tables not assigned to any domain, joins/metrics pointing at unknown tables or columns, missing table/column descriptions, `enum_values` the column's type can't store (the same findings `context test` reports, without the agent run). In a checkout bound to a project (`project.yml`, `--project`, or `CASSIS_PROJECT_ID`), it also cross-checks the tree against the project's source schema: references to tables or columns the warehouse doesn't have print as **warnings** too, advisory only (the object may simply not be built or synced yet). Warnings never fail the check.
+- `cassis context check` validates the context files in your repository with the exact same checks as the Cassis GitHub PR check (YAML parsing, round-trip, import validation), so you can gate merges in any CI system, not just GitHub. It then prints advisory **context quality warnings** for a tree that parsed: tables not assigned to any domain, joins/metrics pointing at unknown tables or columns, tables without a description, `enum_values` the column's type can't store (the same findings `context test` reports, without the agent run). In a checkout bound to a project (`project.yml`, `--project`, or `CASSIS_PROJECT_ID`), it also cross-checks the tree against the project's source schema: references to tables or columns the warehouse doesn't have print as **warnings** too, advisory only (the object may simply not be built or synced yet). Warnings never fail the check.
 - `cassis schema pull` downloads the data source's full source schema (as Cassis last introspected it) into `<base-path>/.schema.json`, a **gitignored** local snapshot (the command maintains the ignore entry) with a `pulled_at` stamp. The warehouse stays authoritative; the snapshot is a cache for offline/bulk work, e.g. a coding agent grepping table and column names during a modeling pass instead of paging through the MCP `get_source_schema` tool. Re-run to refresh.
 - `cassis context fmt` rewrites the context files in canonical form (think `black`/`gofmt` for your context), so hand or agent edits pass the round-trip check.
 - `cassis context upload` uploads the context files to a Cassis project (full replace) and, by default, publishes them immediately as a new version, so a merge to your main branch can go live in one CI step. It runs from a git checkout whose context files are committed, and the published version records that commit, even when the upload changes nothing, so `cassis status` can tell whether a checkout matches what is live.
@@ -17,7 +17,7 @@ Validate, test and evaluate your context from your terminal, then publish it. Th
 - `cassis eval list-cases`, `cassis eval history` and `cassis eval delete-case` maintain the suite: list the current cases with their ids (flagging those whose gold SQL reads tables the context lacks), see how one case has behaved across runs (pass rate, whether repeated runs under one configuration disagree, divergences and timings), and prune one that is stale or wrong (e.g. its gold SQL encodes a definition the context has since changed). `cassis eval history` counts a repeat run as one run with its attempts, and prints each result's error, why result comparison did not apply, and the comparison rule that decided it.
 - `cassis eval runs` lists the project's recent eval runs, newest first (`--limit`, default 20; `--json` for the server's list): each run's id, status, the context it scored, where it came from (CLI, CI, scheduled, Evals page, ...), the model and how many results passed (attempts on a repeat run, and how much of the suite a change-scoped run covered), and for a run the spending protection did not start, why. Exits 3 on a server too old to list runs.
 - `cassis schema plan <ddl>` (or `--warehouse` on a project connected to a warehouse) previews what a schema update would change before anything is applied: the source schema diff, the context changes Cassis will make (every change on a table placed in the context, with everything a drop takes with it) and warnings, terraform-style. `cassis schema apply <ddl>` (or `--plan <id>`) writes the resulting context files into the local checkout, app untouched, for review with `git diff`. `cassis schema push <ddl> [--publish]` pushes the new schema and the local context to the app (`--yes` in CI). The file speaks only for the schemas it contains: pass `--complete` when it is the project's complete source schema so schemas absent from it are treated as dropped. With `--warehouse` the server introspects the connected warehouse instead of parsing a file; the plan is always whole-source. `cassis schema plan <ddl> --dry-run` is the prepare-ahead variant: the plan is computed synchronously and nothing is kept in Cassis (no plan to apply or resume, the current plan untouched), so the schema snapshot for a change still in a PR can be planned against safely; `--write-checkout` writes the context files it would produce into the checkout, to commit alongside the schema change.
-- `cassis projects list` lists the projects your API key can reach: id (what `--project` and `CASSIS_PROJECT_ID` take), name, published context version, and data-source dialect. A pipeline or agent can discover the project id from the terminal instead of fishing it out of a webapp URL.
+- `cassis projects list` lists the projects your account can reach: id (what `--project` and `CASSIS_PROJECT_ID` take), name, published context version, and data-source dialect. A pipeline or agent can discover the project id from the terminal instead of fishing it out of a webapp URL.
 - DDL imports describe one schema snapshot/export file, including ordinary and materialized views; they do not replay incremental migrations. Extraction diagnostics include object names and statement locations. If extraction is incomplete, `schema plan` and `--dry-run` show the extracted inventory and exit 1; `apply`, `push`, and `--write-checkout` cannot save that result. Unknown column types are warnings when all output names are known. Plans also show object-kind, view-definition, comment, and constraint changes. `--json` preserves structured diagnostics and the server-capped inventory.
 
 - `cassis status` shows the project's published version (number, label, git commit), whether unpublished changes await publication, the git-sync binding, a schema plan waiting to be applied, and how your local git HEAD relates to the published commit (in sync / N commits ahead / diverged). `cassis status --watch` polls until the published commit matches your local HEAD (e.g. right after merging a PR whose CI publishes the context) instead of watching the GitHub Actions tab.
@@ -25,6 +25,70 @@ Validate, test and evaluate your context from your terminal, then publish it. Th
 - `cassis dbt push` sends your dbt project's artifacts (`target/manifest.json`, and `catalog.json` when present) to Cassis from the dbt project's CI, with the commit they were built from. Cassis checks the files, matches each dbt model, seed, snapshot and source to a table of the project's data source, and keeps the upload as the project's dbt baseline unless a newer one is already there. The command prints how many relations matched and how many tests they declare. Cassis compares the upload with the previous baseline and saves findings about the context the merged change puts in doubt for grouping and issue curation. The command distinguishes findings awaiting curation from published issues, printing the source observation for pending findings and links for published issues. Nothing the agent answers with changes.
 - `cassis dbt check` runs the same comparison on a pull request, before the change merges: it uploads the PR's artifacts (after `dbt compile` on the production target), compares them with the baseline, and prints the context tables, columns, joins and metrics the change puts in doubt, with why it matters and the context change to make. Each finding also says its **reach**, how many chat answers used its context tables in the last 30 days, and within each section the most-reached objects print first, the order the Review page will show them in. Findings are advisory: nothing is filed, the baseline doesn't move, and the check exits 0 with or without findings.
 - `cassis verify` runs the full local gate in one verb (`context fmt --check`, `context check`, `eval run`), stopping at the first failure. One command in a checkout ("is this change safe to merge?"), one job in CI. `--no-eval` skips the eval suite.
+
+## Sign in
+
+```sh
+cassis login
+cassis auth status
+cassis projects list
+```
+
+`login` opens your browser and prints a verification URL and short code. Sign in
+with your existing Cassis account (Google or email), enter that code, and approve
+CLI access. The approval page identifies your account and permissions. Only
+approve a code from a login you started. The CLI acts with your **current** role,
+organization and domain permissions; signing in grants no additional rights.
+Requires a Cassis server with CLI device authorization support.
+
+For Claude Code, a container, SSH, or another remote terminal, run
+`cassis login --no-browser` and open the printed URL on your own computer. The
+remote CLI polls for approval; no port forwarding or local callback is needed.
+An agent can start login and show you the URL/code; you complete sign-in yourself.
+Do not paste passwords or tokens into the agent chat. Codes expire after 10
+minutes. Ctrl-C cancels the request; denial and expiry require a new login.
+Ordinary commands and CI jobs never start login or open a browser.
+
+Saved credentials live in macOS Keychain, Windows Credential Locker, or an
+unlocked Linux Secret Service/KWallet session, **never in your repository or a
+plaintext fallback**. Remote/container environments need their own usable OS
+credential store; device authorization does not forward your laptop's keychain.
+Without one, login stops before authorization: configure a secure store, or keep
+using an API key supplied through your environment's secret manager. Access and
+refresh credentials are not printed by any CLI command. Local processes running
+as the same OS user may have access to that user's credential store.
+
+Access tokens last 10 minutes and refresh automatically. Refresh sessions expire
+after 30 days without rotation by default (the server can configure this). A
+per-server lock serializes concurrent commands across processes. If a process
+crashes or loses a refresh response, the CLI asks you to log out and log in again
+instead of reusing a possibly consumed refresh token. Revocation, changed account
+eligibility and server session loss can also require a new login.
+
+`cassis auth status` verifies and shows the effective account, organization, role,
+server and credential source; `cassis status` still reports **project** status.
+One account is saved per server. To switch accounts, run `cassis logout`, then
+`cassis login`, and use **Use another account** on the browser consent page.
+
+`cassis logout` revokes only this login session and removes its local credentials.
+It can revoke the session even when the saved access token has expired and a
+copied refresh credential has kept the session active elsewhere.
+It does not revoke browser/MCP sessions or API keys. If the server is unreachable,
+credentials remain available for a revocation retry and logout exits 3. Explicit
+`cassis logout --local-only` removes them without confirming revocation; any
+copied credentials could remain usable until expiry.
+
+Credential precedence is **`--api-key` → `CASSIS_API_KEY` → saved login**. An
+explicit key that is rejected never falls back to a saved account. Logout does
+not unset `CASSIS_API_KEY`. Keep API keys in CI secret variables as before;
+delegated gateway keys are not CLI credentials.
+
+Server selection is **`--api-url` → `CASSIS_API_URL` →
+`https://app.getcassis.com`**. Pass the server flag to each command, or set the
+variable for the shell. Saved logins are keyed by normalized server origin;
+changing server never forwards another server's credentials. Login requires
+HTTPS, with HTTP allowed only on localhost for development. Authentication
+requests do not follow redirects.
 
 ## Install
 
@@ -37,12 +101,14 @@ pip install cassis-cli
 The context tree under `<base-path>` (default `cassis/`) is:
 
 - **Project identity**: `project.yml`, the Cassis project id and format version. Written by `pull` and by server-side publish (the places that know the id); a local `fmt` won't create it.
-- **Domains**: Markdown files. Every domain is the `README.md` of its folder: `domains/README.md` for the root, `domains/<path>/README.md` for each sub-domain. Each has a small YAML frontmatter block (`type`, `title`, `description`) and a Markdown body carrying the domain's `context_md`; a generated section at the bottom links the domain's tables and metrics (kept current by `fmt`/`pull`: edit your prose above it, and the PR check fails if the links are stale, so re-run `fmt`). The layout is a Cassis profile inspired by [OKF](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf): the files render on GitHub and read in any Markdown editor, but Cassis validates them strictly (unknown keys are flagged, not preserved).
+- **Domains**: Markdown files. Every domain is the `README.md` of its folder: `domains/README.md` for the root, `domains/<path>/README.md` for each sub-domain. Each has a small YAML frontmatter block (`type`, `title`, `description`, optionally `owners`) and a Markdown body carrying the domain's `context_md`; a generated section at the bottom links the domain's tables and metrics (kept current by `fmt`/`pull`: edit your prose above it, and the PR check fails if the links are stale, so re-run `fmt`). The layout is a Cassis profile inspired by [OKF](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf): the files render on GitHub and read in any Markdown editor, but Cassis validates them strictly (unknown keys are flagged, not preserved).
 - **Tables, joins, metrics**: YAML, unchanged: `tables/<schema>/<table>.yml`, `joins.yml`, `metrics/<name>.yml`. A column can list the values it stores as `enum_values` (items `{value, description?}`, values quoted exactly as stored); see `cassis/AGENTS.md`.
 
 **Migrating an existing repo** (domains were YAML `_project.yml` / `_domain.yml` before cassis-cli 1.1.0): upgrade and run `cassis context fmt` (or `cassis context pull` if you have no local edits). It rewrites the domain files to Markdown and removes the old ones. Review the diff and commit. Cassis reads the old YAML domain files too, so an un-migrated repo keeps working until you convert it. **Uploading requires cassis-cli ≥ 1.1.0**: the server rejects an older CLI (which would drop the Markdown domain files) with a clear upgrade error.
 
-## Setup
+## CI setup
+
+Interactive users can follow [Sign in](#sign-in). For automation:
 
 1. Create an API key in Cassis under **Organization settings → API keys** (keys start with `sk-k6-`).
 2. Store it as a CI secret and expose it as `CASSIS_API_KEY`.
@@ -154,7 +220,7 @@ cassis schema push schema.sql --complete --yes  # schema + context to the app
 cassis schema plan --warehouse                   # warehouse-connected projects: introspect instead
 cassis schema plan future.sql --dry-run --write-checkout  # plan a not-yet-deployed DDL, keep nothing server-side
 
-# List the projects the API key can reach (id, name, published version, dialect):
+# List the projects the acting account can reach (id, name, published version, dialect):
 cassis projects list
 
 # Refresh the issues from the conversations nobody has analyzed yet (the same pass as the
@@ -203,7 +269,7 @@ Configuration (flags take precedence over env vars):
 
 | Flag        | Env var          | Default                     |
 | ----------- | ---------------- | --------------------------- |
-| `--api-key` | `CASSIS_API_KEY` | none (required)             |
+| `--api-key` | `CASSIS_API_KEY` | saved login when no key is set             |
 | `--api-url` | `CASSIS_API_URL` | `https://app.getcassis.com` |
 | `--base-path` | `CASSIS_BASE_PATH` | `cassis`, must match the project's git-sync "Path" setting |
 | `--project` (check, pull, upload, schema pull, eval run, eval add-case, eval list-cases, eval history, eval runs, eval show, eval delete-case, test, issues, dbt push, dbt check) | `CASSIS_PROJECT_ID` | the id in `<base-path>/project.yml` (required before the first pull; `check` alone falls back to the project-less validation when unbound) |
@@ -232,13 +298,30 @@ cassis context fmt --check
 
 **Review the diff before committing**: canonical form keeps exactly the fields Cassis understands. Unknown fields (typos) are dropped, and the rewrite makes them visible in `git diff` instead of losing them silently at sync time. Files with duplicate YAML keys are rejected (fix them by hand: the formatter can't know which value you meant).
 
+### Domain owners
+
+A domain README can list who owns the domain. Each entry is an email address (one person) or a typed reference: `slack:@group` (a Slack user group), `github:@user` or `github:@org/team`. Anything else is rejected, a bare `@name` included:
+
+```markdown
+---
+type: Domain
+title: Sales
+owners:
+- jane@acme.com
+- slack:@sales-data
+- github:@acme/sales-data
+---
+```
+
+A domain without `owners` inherits its nearest parent's, and the root domain's (`domains/README.md`) are the default. Cassis shows the owners on each issue (`cassis issues show`, and `owners` / `owner_domain` in `cassis issues list --json`) so it can be routed to the right team. Cassis passes the entries on as declared, without resolving them to people. Owners grant no edit permission in Cassis and are never shown to the agent.
+
 ### Exit codes
 
 | Code | Meaning                                                                        |
 | ---- | ------------------------------------------------------------------------------ |
 | 0    | Context is valid (check) / pulled (pull) / uploaded (upload) / eval run completed with no regression: every case passed, already failed on the base run, or is pending the change it guards (eval run) / every probe completed (test, whatever its outcome; probes are informational, don't gate CI on them) / dbt upload accepted, or kept behind a newer one (dbt push) / dbt upload checked, with or without findings (dbt check) |
 | 1    | Validation failed (check: findings printed; upload: nothing imported; eval run: invalid tree or a regression, a case whose answer fails now and passed on the base run; test: invalid tree or a probe failed; add-case: duplicate question or gold SQL that does not run; delete-case, history: no such case in the project; show: no such run in the project; issues: no such issue or occurrence in the project; issues analyze: failed or cancelled analysis run; schema plan/apply: extraction is incomplete, the plan failed (unparseable or truncated DDL), is stale or expired, the apply failed, or the project won't accept it (a plan is being applied, a DDL was given for a warehouse-connected project, or --warehouse for a DDL-only one); dbt push: the upload was refused or rejected (a file is invalid, too large or from an unsupported dbt version, or no relation matches the project's data source); dbt check: the upload was refused or rejected (an invalid file, or no baseline yet: run `cassis dbt push` first)) |
-| 2    | Usage error (missing API key or project, no context directory, unreadable file, tree over the size limits, `eval run --branch` naming a context branch the project does not have, `eval run --base` naming a published version the project does not have or given without `--changed`, `eval run --dry-run --case` naming no current case, `upload` or `schema push` outside a git checkout or with uncommitted context files, `dbt push` or `dbt check` without a manifest.json, outside a git checkout without `--commit`, or with an artifact over the size limits) |
+| 2    | Usage error (missing credentials or project, no context directory, unreadable file, tree over the size limits, `eval run --branch` naming a context branch the project does not have, `eval run --base` naming a published version the project does not have or given without `--changed`, `eval run --dry-run --case` naming no current case, `upload` or `schema push` outside a git checkout or with uncommitted context files, `dbt push` or `dbt check` without a manifest.json, outside a git checkout without `--commit`, or with an artifact over the size limits) |
 | 3    | Transport/API error (unreachable API, invalid key, inaccessible project, unexpected response, a server too old for the command or option), another eval run or issue analysis already active, out of credits, `--timeout` reached, or Cassis failed on its side while processing a dbt upload (`dbt push` / `dbt check`: nothing to fix in the upload, push again) |
 | 4    | `eval run` reached no verdict: the run failed or was cancelled on Cassis's side, or the cases that did not pass errored instead of failing (agent, judge or warehouse errors, a broken gold SQL). Nothing says the context regressed: rerun, or read the errors |
 

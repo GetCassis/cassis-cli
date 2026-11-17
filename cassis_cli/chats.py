@@ -16,7 +16,7 @@ from cassis_cli.common import api_failure, one_line, require_api_key, resolve_pr
 app = typer.Typer(no_args_is_help=True, help="Read conversations and their saved analyses.")
 _PATH = typer.Option(Path("."), "--path", help="Checkout root containing the context directory.")
 _PROJECT = typer.Option(None, "--project", envvar="CASSIS_PROJECT_ID", help="Project ID; defaults to project.yml.")
-_KEY = typer.Option(None, "--api-key", envvar="CASSIS_API_KEY", help="Cassis API key.")
+_KEY = typer.Option(None, "--api-key", envvar="CASSIS_API_KEY", help="Automation API key; overrides saved login.")
 _URL = typer.Option(DEFAULT_API_URL, "--api-url", envvar="CASSIS_API_URL", help="Cassis API base URL.")
 _BASE = typer.Option("cassis", "--base-path", envvar="CASSIS_BASE_PATH", help="Context directory within the checkout.")
 _APP_URL = typer.Option(None, "--app-url", help="Webapp base URL for conversation links; defaults to --api-url.")
@@ -75,7 +75,7 @@ def list_chats(
             since = (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).isoformat()
         except ValueError as exc:
             raise typer.BadParameter("Use an ISO date or timestamp.", param_hint="--since") from exc
-    key = require_api_key(api_key)
+    key = require_api_key(api_key, api_url)
     project = resolve_project_id(project_id, path / base_path, quiet=json_output)
     assert project is not None
     params = {
@@ -157,7 +157,7 @@ def show_chat(
     """Read a conversation followed by its saved analysis. No model calls or automatic retries."""
     if analysis_only and (trace or trace_entry):
         raise typer.BadParameter("--analysis-only cannot be combined with trace options.")
-    key = require_api_key(api_key)
+    key = require_api_key(api_key, api_url)
     project = resolve_project_id(project_id, path / base_path, quiet=json_output)
     assert project is not None
     data = _read(api_url=api_url, api_key=key, project_id=project, chat_id=str(chat_id))

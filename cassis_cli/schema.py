@@ -82,7 +82,7 @@ def pull(
         None,
         "--api-key",
         envvar="CASSIS_API_KEY",
-        help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+        help="Automation API key; overrides saved login. For interactive access, run cassis login.",
     ),
     api_url: str = typer.Option(
         DEFAULT_API_URL,
@@ -105,7 +105,7 @@ def pull(
     a warehouse sync to refresh. Exits 0 on success, 2 on usage errors, 3 on
     transport/API errors.
     """
-    api_key = require_api_key(api_key)
+    api_key = require_api_key(api_key, api_url)
     ontology_dir = path / base_path
     project_id = resolve_project_id(project_id, ontology_dir)
 
@@ -180,7 +180,7 @@ _API_KEY_OPTION = typer.Option(
     None,
     "--api-key",
     envvar="CASSIS_API_KEY",
-    help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+    help="Automation API key; overrides saved login. For interactive access, run cassis login.",
 )
 _API_URL_OPTION = typer.Option(DEFAULT_API_URL, "--api-url", envvar="CASSIS_API_URL", help="Cassis API base URL.")
 _BASE_PATH_OPTION = typer.Option(
@@ -263,7 +263,7 @@ def plan(
     alone. --write-checkout then writes the resulting context files into the
     checkout, to commit next to the schema change; nothing is pushed.
     """
-    api_key = require_api_key(api_key)
+    api_key = require_api_key(api_key, api_url)
     _require_one_source(ddl_file, warehouse)
     if write_checkout and not dry_run:
         typer.secho(
@@ -349,7 +349,7 @@ def apply(
     `cassis schema push <ddl>`. Exits 0 when written, 1 when the plan failed /
     is stale, 2 on usage errors, 3 on transport errors.
     """
-    api_key = require_api_key(api_key)
+    api_key = require_api_key(api_key, api_url)
     _require_one_source(ddl_file, warehouse, or_plan=plan_id, accepts_plan=True)
     base_path = base_path.strip().strip("/")
     ontology_dir = (path / Path(base_path)).resolve()
@@ -442,7 +442,7 @@ def push(
     new version. Exits 0 when pushed, 1 when the plan failed / is stale or the
     upload was rejected, 2 on usage errors, 3 on transport errors.
     """
-    api_key = require_api_key(api_key)
+    api_key = require_api_key(api_key, api_url)
     _require_one_source(ddl_file, warehouse)
     files, base_path = collect_tree(path, base_path)
     head = require_committed_tree(path, base_path, files)

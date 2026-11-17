@@ -99,7 +99,9 @@ _PROJECT_OPTION = typer.Option(
     envvar="CASSIS_PROJECT_ID",
     help="Cassis project ID (default: the project_id in <base-path>/project.yml, if the repo has one).",
 )
-_API_KEY_OPTION = typer.Option(None, "--api-key", envvar="CASSIS_API_KEY", help="Cassis API key.")
+_API_KEY_OPTION = typer.Option(
+    None, "--api-key", envvar="CASSIS_API_KEY", help="Automation API key; overrides saved login."
+)
 _API_URL_OPTION = typer.Option(DEFAULT_API_URL, "--api-url", envvar="CASSIS_API_URL", help="Cassis API base URL.")
 _APP_URL_OPTION = typer.Option(
     None,
@@ -248,7 +250,7 @@ def _upload_and_wait(
     Returns the final record, with the resolved project id under ``_project_id``.
     Exits on usage, transport and refusal errors.
     """
-    api_key = require_api_key(api_key)
+    api_key = require_api_key(api_key, api_url)
     resolved_project = resolve_project_id(project_id, Path(base_path), quiet=json_output)
     assert resolved_project is not None
     files = _read_artifacts(target_dir)

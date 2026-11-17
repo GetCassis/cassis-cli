@@ -44,7 +44,7 @@ def verify(
         None,
         "--api-key",
         envvar="CASSIS_API_KEY",
-        help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+        help="Automation API key; overrides saved login. For interactive access, run cassis login.",
     ),
     api_url: str = typer.Option(
         DEFAULT_API_URL,
@@ -72,7 +72,7 @@ def verify(
     Exits with the first failing gate's code: 0 all gates passed, 1 validation
     or eval failure, 2 usage errors, 3 transport/API errors, 130 interrupted.
     """
-    api_key = require_api_key(api_key)
+    api_key = require_api_key(api_key, api_url)
 
     code = _step(
         "cassis context fmt --check",

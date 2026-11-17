@@ -758,7 +758,7 @@ def add_case(
         None,
         "--api-key",
         envvar="CASSIS_API_KEY",
-        help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+        help="Automation API key; overrides saved login. For interactive access, run cassis login.",
     ),
     api_url: str = typer.Option(
         DEFAULT_API_URL,
@@ -794,7 +794,7 @@ def add_case(
     question or gold SQL that does not run, 2 on usage errors, 3 on
     transport/API errors.
     """
-    api_key = require_api_key(api_key)
+    api_key = require_api_key(api_key, api_url)
     project_id = resolve_project_id(project_id, path / Path(base_path))
     expectation = _expectation_option(expect)
     comparison = _compare_option(compare)
@@ -949,7 +949,7 @@ def replace_case(
         None,
         "--api-key",
         envvar="CASSIS_API_KEY",
-        help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+        help="Automation API key; overrides saved login. For interactive access, run cassis login.",
     ),
     api_url: str = typer.Option(
         DEFAULT_API_URL,
@@ -978,7 +978,7 @@ def replace_case(
     run, 2 on usage errors (including a replacement left without a gold SQL
     that does not expect a cannot-answer), 3 on transport/API errors.
     """
-    api_key = require_api_key(api_key)
+    api_key = require_api_key(api_key, api_url)
     project_id = resolve_project_id(project_id, path / Path(base_path))
     try:
         UUID(case_id)
@@ -1122,7 +1122,7 @@ def list_cases(
         None,
         "--api-key",
         envvar="CASSIS_API_KEY",
-        help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+        help="Automation API key; overrides saved login. For interactive access, run cassis login.",
     ),
     api_url: str = typer.Option(
         DEFAULT_API_URL,
@@ -1162,7 +1162,7 @@ def list_cases(
     Exits 0 on success, 2 on usage errors (including a --branch the project
     does not have), 3 on transport/API errors.
     """
-    api_key = require_api_key(api_key)
+    api_key = require_api_key(api_key, api_url)
     project_id = resolve_project_id(project_id, path / Path(base_path))
 
     try:
@@ -1481,7 +1481,7 @@ def history(
         None,
         "--api-key",
         envvar="CASSIS_API_KEY",
-        help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+        help="Automation API key; overrides saved login. For interactive access, run cassis login.",
     ),
     api_url: str = typer.Option(
         DEFAULT_API_URL,
@@ -1508,7 +1508,7 @@ def history(
     the model moving. Exits 0 on success, 1 when the case does not exist in
     the project, 2 on usage errors, 3 on transport/API errors.
     """
-    api_key = require_api_key(api_key)
+    api_key = require_api_key(api_key, api_url)
     project_id = resolve_project_id(project_id, path / Path(base_path))
     try:
         UUID(case_id)
@@ -1569,7 +1569,7 @@ def list_runs(
         None,
         "--api-key",
         envvar="CASSIS_API_KEY",
-        help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+        help="Automation API key; overrides saved login. For interactive access, run cassis login.",
     ),
     api_url: str = typer.Option(
         DEFAULT_API_URL,
@@ -1595,7 +1595,7 @@ def list_runs(
     what `cassis eval show` takes. Exits 0 on success, 2 on usage errors,
     3 on transport/API errors (including a server too old to list runs).
     """
-    api_key = require_api_key(api_key)
+    api_key = require_api_key(api_key, api_url)
     project_id = resolve_project_id(project_id, path / Path(base_path))
     try:
         records = get_eval_runs(api_url=api_url, api_key=api_key, project_id=project_id, limit=limit)
@@ -1654,7 +1654,7 @@ def show(
         None,
         "--api-key",
         envvar="CASSIS_API_KEY",
-        help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+        help="Automation API key; overrides saved login. For interactive access, run cassis login.",
     ),
     api_url: str = typer.Option(
         DEFAULT_API_URL,
@@ -1680,7 +1680,7 @@ def show(
     `both`, or `unattributed`. Exits 0 on success, 1 when the run does not
     exist in the project, 2 on usage errors, 3 on transport/API errors.
     """
-    api_key = require_api_key(api_key)
+    api_key = require_api_key(api_key, api_url)
     project_id = resolve_project_id(project_id, path / Path(base_path))
     try:
         UUID(run_id)
@@ -1753,7 +1753,7 @@ def delete_case(
         None,
         "--api-key",
         envvar="CASSIS_API_KEY",
-        help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+        help="Automation API key; overrides saved login. For interactive access, run cassis login.",
     ),
     api_url: str = typer.Option(
         DEFAULT_API_URL,
@@ -1775,7 +1775,7 @@ def delete_case(
     the case does not exist in the project, 2 on usage errors, 3 on
     transport/API errors.
     """
-    api_key = require_api_key(api_key)
+    api_key = require_api_key(api_key, api_url)
     project_id = resolve_project_id(project_id, path / Path(base_path))
     try:
         UUID(case_id)
@@ -1815,7 +1815,7 @@ def run(
         None,
         "--api-key",
         envvar="CASSIS_API_KEY",
-        help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+        help="Automation API key; overrides saved login. For interactive access, run cassis login.",
     ),
     api_url: str = typer.Option(
         DEFAULT_API_URL,
@@ -1909,7 +1909,7 @@ def run(
     an agent that read your data while planning can carry a value it saw into
     a SQL literal — so treat this output as sensitive as the queries themselves.
     """
-    api_key = require_api_key(api_key)
+    api_key = require_api_key(api_key, api_url)
     if base is not None:
         try:
             UUID(base)
@@ -2327,7 +2327,7 @@ def health(
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Read case health and recommendations without running evals or spending credits."""
-    key = require_api_key(api_key)
+    key = require_api_key(api_key, api_url)
     project = resolve_project_id(project_id, path / Path(base_path))
     try:
         result = get_eval_health(

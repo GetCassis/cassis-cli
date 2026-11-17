@@ -3,7 +3,23 @@
 Versions match the releases on [PyPI](https://pypi.org/project/cassis-cli/); dates are the
 PyPI upload date.
 
-## 3.6.1 (unreleased)
+## 3.7.0 (2026-11-17)
+
+### Added
+
+- Sign in with `cassis login` through your browser, including from remote agents and SSH with `--no-browser`. A short code and explicit browser approval connect the terminal to your account.
+- Saved logins use the operating system credential store, are isolated by server, and refresh automatically. Concurrent commands share refresh safely. Environments without a usable secure store must configure one or keep using API keys.
+- Inspect your effective account and server with `cassis auth status`. Revoke and remove the saved session with `cassis logout`; `--local-only` explicitly skips server revocation when needed. Switch accounts by logging out first.
+- Explicit `--api-key` and `CASSIS_API_KEY` retain precedence for automation. Ordinary commands never initiate login. Requires a server with CLI device authorization support.
+- Logout revokes the entire saved login session even after local credentials expire and a copied credential has been refreshed elsewhere.
+- `cassis issues show` prints the owners an issue is routed to; `--json` on `issues list` and `issues show` carries `owners` and `owner_domain`.
+- The bundled context design guide (`cassis/AGENTS.md`) moves to doctrine v14: domains can declare `owners` (an email, or a typed reference such as `slack:@group` or `github:@org/team`), and the guide says where a fact goes when two places seem to need it. Run `cassis context fmt` to refresh it in a checkout.
+
+### Changed
+
+- `cassis context check` and `cassis context test` no longer warn about columns without a description; a table without a description still gets a warning.
+
+## 3.6.1 (2026-11-12)
 
 ### Fixed
 

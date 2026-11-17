@@ -83,4 +83,4 @@ class TestProjectsListCommand:
         result = runner.invoke(app, ["projects", "list", "--api-key", "sk-k6-bad"])
 
         assert result.exit_code == 3
-        assert "rejected the API key" in result.output
+        assert "rejected the credential" in result.output

@@ -200,7 +200,7 @@ class TestIssuesList:
         result = runner.invoke(app, _args("issues", "list"))
 
         assert result.exit_code == 3
-        assert "rejected the API key" in result.output
+        assert "rejected the credential" in result.output
 
 
 class TestIssuesShow:

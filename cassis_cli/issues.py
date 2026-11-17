@@ -69,7 +69,7 @@ _API_KEY_OPTION = typer.Option(
     None,
     "--api-key",
     envvar="CASSIS_API_KEY",
-    help="Cassis API key (sk-k6-...). Create one in Organization settings -> API keys.",
+    help="Automation API key; overrides saved login. For interactive access, run cassis login.",
 )
 _API_URL_OPTION = typer.Option(
     DEFAULT_API_URL,
@@ -145,7 +145,7 @@ def list_issues(
     status = _validate_choice(status, STATUSES, "--status")
     impact = _validate_choice(impact, IMPACTS, "--impact")
     cause = _validate_choice(cause, CAUSES, "--cause")
-    api_key = require_api_key(api_key)
+    api_key = require_api_key(api_key, api_url)
     project_id = resolve_project_id(project_id, path / Path(base_path), quiet=json_output)
 
     try:
@@ -215,7 +215,7 @@ def show(
     it when that PR merges. Exits 0 on success, 1 when the issue does not
     exist in the project, 2 on usage errors, 3 on transport/API errors.
     """
-    api_key = require_api_key(api_key)
+    api_key = require_api_key(api_key, api_url)
     project_id = resolve_project_id(project_id, path / Path(base_path), quiet=json_output)
 
     try:
@@ -238,6 +238,7 @@ def show(
         f"{issue.get('occurrence_count_cache', len(occurrences))} occurrence(s)"
     )
     _field("Domains", ", ".join(issue.get("domains") or []) or None)
+    _field("Owners", ", ".join(issue.get("owners") or []) or None)
     _field("Reach", _reach(issue))
     _field("Evidence", _evidence(issue))
     _field("Origin", _origin(issue))
@@ -297,7 +298,7 @@ def evidence(
     occurrence does not exist in the project, 2 on usage errors, 3 on
     transport/API errors.
     """
-    api_key = require_api_key(api_key)
+    api_key = require_api_key(api_key, api_url)
     project_id = resolve_project_id(project_id, path / Path(base_path), quiet=json_output)
 
     try:
@@ -374,7 +375,7 @@ def _set_status(
     confirm_published: bool = False,
 ) -> None:
     """Post a new status for the issue and confirm it on one line."""
-    api_key = require_api_key(api_key)
+    api_key = require_api_key(api_key, api_url)
     project_id = resolve_project_id(project_id, path / Path(base_path))
 
     try:
@@ -524,7 +525,7 @@ def analyze(
     is already in flight, or on --timeout (the run keeps going server-side).
     Ctrl-C cancels the run and exits 130.
     """
-    api_key = require_api_key(api_key)
+    api_key = require_api_key(api_key, api_url)
     project_id = resolve_project_id(project_id, path / Path(base_path), quiet=json_output)
 
     try:
