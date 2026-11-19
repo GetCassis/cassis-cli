@@ -3,6 +3,12 @@
 Versions match the releases on [PyPI](https://pypi.org/project/cassis-cli/); dates are the
 PyPI upload date.
 
+## 3.8.0 (unreleased)
+
+### Removed
+
+- `cassis issues analyze` is gone. Cassis now reads each conversation on its own once it is quiet and keeps the issues up to date, so nothing is left to start by hand. Remove the command from scripts and CI jobs that call it.
+
 ## 3.7.0 (2026-11-17)
 
 ### Added

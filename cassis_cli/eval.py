@@ -2053,7 +2053,7 @@ def run(
             json_output=json_output,
         )
     except KeyboardInterrupt:
-        # To stderr under --json, for the same reason as `issues analyze`.
+        # To stderr under --json, so stdout stays the JSON document.
         typer.echo("", err=json_output)
         typer.echo("Interrupted — cancelling the run...", err=json_output)
         try:
