@@ -6,7 +6,9 @@ from cassis_cli.api import (
     get_issue,
     get_issue_evidence,
     get_issues,
+    get_requested_tables,
     post_issue_status,
+    post_requested_table_decision,
 )
 from cassis_cli.main import app
 from typer.testing import CliRunner
@@ -110,7 +112,8 @@ class TestIssuesList:
         result = runner.invoke(app, _args("issues", "list"))
 
         assert result.exit_code == 0, result.output
-        lines = result.output.splitlines()
+        *lines, hint = result.output.splitlines()
+        assert hint == "Tables users asked for are not issues: see `cassis issues tables`."
         assert len({line.index("reach") for line in lines}) == 1, lines
         assert lines[0].index("dbt") == lines[1].index("conversation")
         assert lines[0].index("x12000") == lines[1].index("x3")
@@ -449,3 +452,142 @@ def test_show_explains_restricted_sources(monkeypatch, restricted):
     structured = runner.invoke(app, _args("issues", "show", ISSUE_ID, "--json"))
     assert structured.exit_code == 0
     assert json.loads(structured.output)["restricted_sources"] is restricted
+
+
+_TABLES = {
+    "items": [
+        {
+            "name": "CORE.PAYMENTS",
+            "conversations": 12,
+            "users": 5,
+            "layer": "modeled",
+            "suggested_domain": "finance",
+            "filed_by_team": False,
+            "candidate_domains": [{"domain": "finance", "conversations": 9}, {"domain": "growth", "conversations": 3}],
+        },
+        {
+            "name": "RAW.SESSION",
+            "conversations": 2,
+            "users": 1,
+            "layer": None,
+            "suggested_domain": None,
+            "filed_by_team": False,
+            "candidate_domains": [{"domain": "growth", "conversations": 1}, {"domain": "product", "conversations": 1}],
+        },
+        {
+            "name": "CRM.CALLS",
+            "conversations": 2,
+            "users": 2,
+            "layer": "raw",
+            "suggested_domain": "sales",
+            "filed_by_team": False,
+            "candidate_domains": [{"domain": "sales", "conversations": 1}],
+        },
+    ],
+    "total": 7,
+    "set_aside": 0,
+    "layers_known": True,
+}
+
+
+class TestIssuesTables:
+    def test_prints_one_line_per_table_the_most_asked_first(self, monkeypatch):
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["url"] = str(request.url)
+            return httpx.Response(200, json=_TABLES)
+
+        _mock(monkeypatch, "get_requested_tables", get_requested_tables, handler)
+
+        result = runner.invoke(app, _args("issues", "tables"))
+
+        assert result.exit_code == 0, result.output
+        assert f"/api/ci/projects/{PROJECT_ID}/requested-tables?limit=50" in seen["url"]
+        assert _squeezed(result).splitlines() == [
+            "x12 users 5 modeled finance CORE.PAYMENTS",
+            # The conversations disagree: no suggestion. One conversation behind it: a weak one.
+            "x2 users 1 - - RAW.SESSION",
+            "x2 users 2 raw sales? CRM.CALLS",
+            "4 more (--offset 3).",
+        ]
+
+    def test_filters_are_sent_and_json_is_the_raw_page(self, monkeypatch):
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["params"] = dict(request.url.params)
+            return httpx.Response(200, json=_TABLES)
+
+        _mock(monkeypatch, "get_requested_tables", get_requested_tables, handler)
+
+        result = runner.invoke(
+            app,
+            _args(
+                "issues",
+                "tables",
+                "--layer",
+                "raw",
+                "--search",
+                "pay",
+                "--domain",
+                "finance",
+                "--offset",
+                "50",
+                "--limit",
+                "5",
+                "--json",
+            ),
+        )
+
+        assert result.exit_code == 0, result.output
+        assert seen["params"] == {"limit": "5", "offset": "50", "layer": "raw", "search": "pay", "domain": "finance"}
+        assert json.loads(result.output) == _TABLES
+
+    def test_empty_list_and_a_bad_layer_is_a_usage_error(self, monkeypatch):
+        empty = {**_TABLES, "items": [], "total": 0}
+        _mock(
+            monkeypatch, "get_requested_tables", get_requested_tables, lambda request: httpx.Response(200, json=empty)
+        )
+
+        result = runner.invoke(app, _args("issues", "tables"))
+        assert result.exit_code == 0, result.output
+        assert result.output.strip() == "No table to add."
+
+        assert runner.invoke(app, _args("issues", "tables", "--layer", "gold")).exit_code == 2
+
+
+class TestIssuesTablesSetAside:
+    def test_sets_a_table_aside_and_takes_it_back(self, monkeypatch):
+        seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append((request.url.path, json.loads(request.content)))
+            return httpx.Response(204)
+
+        _mock(monkeypatch, "post_requested_table_decision", post_requested_table_decision, handler)
+
+        result = runner.invoke(app, _args("issues", "tables", "set-aside", "core.payments"))
+        assert result.exit_code == 0, result.output
+        assert "CORE.PAYMENTS is set aside." in result.output
+        result = runner.invoke(app, _args("issues", "tables", "set-aside", "CORE.PAYMENTS", "--undo"))
+        assert result.exit_code == 0, result.output
+        assert "back in the list" in result.output
+        path = f"/api/ci/projects/{PROJECT_ID}/requested-tables/decision"
+        assert seen == [
+            (path, {"table": "core.payments", "set_aside": True}),
+            (path, {"table": "CORE.PAYMENTS", "set_aside": False}),
+        ]
+
+    def test_a_table_not_in_the_list_exits_1_with_the_reason(self, monkeypatch):
+        refused = {"detail": "This table is not in the list of tables to add."}
+        _mock(
+            monkeypatch,
+            "post_requested_table_decision",
+            post_requested_table_decision,
+            lambda request: httpx.Response(422, json=refused),
+        )
+
+        result = runner.invoke(app, _args("issues", "tables", "set-aside", "CORE.USERS"))
+        assert result.exit_code == 1, result.output
+        assert "not in the list of tables to add" in result.output

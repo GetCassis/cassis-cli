@@ -19,10 +19,13 @@ from cassis_cli.api import (
     ApiError,
     AuthError,
     IssueNotFoundError,
+    TableDecisionRefusedError,
     get_issue,
     get_issue_evidence,
     get_issues,
+    get_requested_tables,
     post_issue_status,
+    post_requested_table_decision,
 )
 from cassis_cli.common import (
     DEFAULT_BASE_PATH,
@@ -36,11 +39,14 @@ from cassis_cli.common import (
 )
 
 app = typer.Typer(no_args_is_help=True, help="Triage the project's issues.")
+# The tables users asked for are a list of their own, not issues: `issues list` points to it.
+_TABLES_HINT = "Tables users asked for are not issues: see `cassis issues tables`."
 
 STATUSES = ("open", "resolved", "dismissed", "all")
 DISMISS_REASONS = ("invalid", "irrelevant", "duplicate", "declined")
 IMPACTS = ("wrong_answer", "at_risk", "unreliable_answer", "no_answer", "inefficient")
 CAUSES = ("ontology_gap", "missing_data")
+LAYERS = ("modeled", "raw")
 
 # The five options every command in this subapp takes. Shared instances: typer
 # reads the option metadata at decoration time, so one constant per flag keeps
@@ -84,7 +90,7 @@ def _validate_choice(value: Optional[str], allowed: "tuple[str, ...]", flag: str
     raise typer.Exit(EXIT_USAGE)
 
 
-def _not_found_failure(exc: IssueNotFoundError) -> "typer.Exit":
+def _not_found_failure(exc: IssueNotFoundError | TableDecisionRefusedError) -> "typer.Exit":
     typer.secho(str(exc), fg=typer.colors.YELLOW, err=True)
     return typer.Exit(EXIT_VALIDATION_FAILED)
 
@@ -158,6 +164,7 @@ def list_issues(
 
     if not issues:
         typer.echo("No issues match." if (status or impact or cause or domain) else "No issues on this project.")
+        typer.echo(_TABLES_HINT)
         raise typer.Exit(EXIT_OK)
 
     rows = []
@@ -185,6 +192,132 @@ def list_issues(
     widths = [max(len(row[column]) for row in rows) for column in range(len(rows[0]) - 1)]
     for row in rows:
         typer.echo("  ".join([*(cell.ljust(width) for cell, width in zip(row, widths)), row[-1]]))
+    typer.echo(_TABLES_HINT)
+    raise typer.Exit(EXIT_OK)
+
+
+tables_app = typer.Typer(help="The warehouse tables users asked for that the context does not describe.")
+app.add_typer(tables_app, name="tables")
+
+
+@tables_app.callback(invoke_without_command=True)
+def tables(
+    ctx: typer.Context,
+    layer: Optional[str] = typer.Option(
+        None, "--layer", help=f"Only the modeled tables or only the raw ones ({', '.join(LAYERS)})."
+    ),
+    search: Optional[str] = typer.Option(None, "--search", help="Only the tables whose name contains this text."),
+    domain: Optional[str] = typer.Option(
+        None, "--domain", help="Only the tables suggested for this domain path or a domain under it."
+    ),
+    offset: int = typer.Option(0, "--offset", min=0, help="How many tables to skip, to page through the list."),
+    limit: int = typer.Option(50, "--limit", min=1, max=200, help="How many tables to print, the most asked first."),
+    path: Path = _PATH_OPTION,
+    project_id: Optional[str] = _PROJECT_OPTION,
+    api_key: Optional[str] = _API_KEY_OPTION,
+    api_url: str = _API_URL_OPTION,
+    base_path: str = _BASE_PATH_OPTION,
+    json_output: bool = typer.Option(False, "--json", help="Print the tables as raw JSON."),
+) -> None:
+    """List the warehouse tables users asked for that the context does not describe, the most asked first.
+
+    These requests are not issues, so `cassis issues list` does not print
+    them: they are one list for the project, one line per table. Prints each
+    table's conversations (`x3`), users, layer (`modeled` or `raw`; `-` when
+    the project does not draw that line), suggested domain and name. The
+    domain is a suggestion: it ends with `?` when it rests on one conversation,
+    and reads `-` when the conversations disagree (`--json` carries every
+    candidate with its count, and the owners each table goes to). A table
+    leaves the list when it is published in the context or when the team sets
+    it aside (`cassis issues tables set-aside <TABLE>`).
+    Exits 0 on success, 2 on usage errors, 3 on transport/API errors.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+    layer = _validate_choice(layer, LAYERS, "--layer")
+    api_key = require_api_key(api_key, api_url)
+    project_id = resolve_project_id(project_id, path / Path(base_path), quiet=json_output)
+
+    try:
+        page = get_requested_tables(
+            api_url=api_url,
+            api_key=api_key,
+            project_id=project_id,
+            layer=layer,
+            search=search,
+            domain=domain,
+            offset=offset,
+            limit=limit,
+        )
+    except (AuthError, ApiError) as exc:
+        raise api_failure(exc) from exc
+
+    if json_output:
+        typer.echo(json.dumps(page, indent=2))
+        raise typer.Exit(EXIT_OK)
+
+    items = page["items"]
+    if not items:
+        typer.echo("No table to add.")
+        raise typer.Exit(EXIT_OK)
+
+    rows = []
+    for table in items:
+        domain = table.get("suggested_domain")
+        candidates = table.get("candidate_domains") or []
+        # A suggestion that one conversation carries is weak: say so on the line.
+        weak = (
+            bool(domain) and not table.get("filed_by_team") and candidates and candidates[0].get("conversations") == 1
+        )
+        rows.append(
+            [
+                f"x{table.get('conversations') or 0}",
+                f"users {table.get('users') or 0}",
+                str(table.get("layer") or "-"),
+                f"{domain}?" if weak else str(domain or "-"),
+                str(table.get("name")),
+            ]
+        )
+    widths = [max(len(row[column]) for row in rows) for column in range(len(rows[0]) - 1)]
+    for row in rows:
+        typer.echo("  ".join([*(cell.ljust(width) for cell, width in zip(row, widths)), row[-1]]))
+    more = int(page.get("total") or 0) - offset - len(items)
+    if more > 0:
+        typer.echo(f"{more} more (--offset {offset + len(items)}).")
+    raise typer.Exit(EXIT_OK)
+
+
+@tables_app.command("set-aside")
+def set_aside_table(
+    table: str = typer.Argument(..., help="SCHEMA.TABLE, as `cassis issues tables` prints it."),
+    undo: bool = typer.Option(False, "--undo", help="Take the table back into the list."),
+    path: Path = _PATH_OPTION,
+    project_id: Optional[str] = _PROJECT_OPTION,
+    api_key: Optional[str] = _API_KEY_OPTION,
+    api_url: str = _API_URL_OPTION,
+    base_path: str = _BASE_PATH_OPTION,
+) -> None:
+    """Record that the team will not add a requested table to the context, or take that back with `--undo`.
+
+    The table leaves `cassis issues tables` for everyone on the project. A
+    table you add needs no command: once the pull request that describes it
+    is merged and published, it leaves the list on its own. Requires the
+    editor or admin role. Exits 0 on success, 1 when the table is not in the
+    list, 2 on usage errors, 3 on transport/API errors.
+    """
+    api_key = require_api_key(api_key, api_url)
+    project_id = resolve_project_id(project_id, path / Path(base_path))
+    try:
+        post_requested_table_decision(
+            api_url=api_url, api_key=api_key, project_id=project_id, table=table, set_aside=not undo
+        )
+    except TableDecisionRefusedError as exc:
+        raise _not_found_failure(exc) from exc
+    except (AuthError, ApiError) as exc:
+        raise api_failure(exc) from exc
+    name = table.strip().upper()
+    message = f"{name} is back in the list of tables to add." if undo else f"{name} is set aside."
+    typer.secho(f"✓ {message}", fg=typer.colors.GREEN)
     raise typer.Exit(EXIT_OK)
 
 

@@ -1232,6 +1232,74 @@ def get_issues(
     return result
 
 
+def get_requested_tables(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    layer: Optional[str] = None,
+    search: Optional[str] = None,
+    domain: Optional[str] = None,
+    offset: int = 0,
+    limit: int = 50,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> dict[str, Any]:
+    """GET /api/ci/projects/{project_id}/requested-tables and return the page of tables to add."""
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/requested-tables"
+    params = {"limit": str(limit)}
+    if offset:
+        params["offset"] = str(offset)
+    if layer:
+        params["layer"] = layer
+    if search:
+        params["search"] = search
+    if domain:
+        params["domain"] = domain
+    result = _get_issue_json(url, api_key, transport, params=params)
+    if not isinstance(result, dict) or not isinstance(result.get("items"), list):
+        raise ApiError(f"Unexpected response shape from the Cassis API at {url}.")
+    return result
+
+
+class TableDecisionRefusedError(ApiError):
+    """The server refused a decision about a requested table (HTTP 422), for example a table that is not in the list."""
+
+
+def post_requested_table_decision(
+    *,
+    api_url: str,
+    api_key: str,
+    project_id: str,
+    table: str,
+    set_aside: bool,
+    transport: Optional[httpx.BaseTransport] = None,
+) -> None:
+    """POST /api/ci/projects/{project_id}/requested-tables/decision: set a requested table aside or take it back.
+
+    Raise `TableDecisionRefusedError` with the server's reason when it refuses
+    the table (HTTP 422: it is not in the list of tables to add).
+    """
+    url = api_url.rstrip("/") + f"/api/ci/projects/{project_id}/requested-tables/decision"
+    try:
+        with _client(transport=transport) as client:
+            response = client.post(
+                url,
+                json={"table": table, "set_aside": set_aside},
+                headers={"Authorization": authorization(api_url, api_key)},
+            )
+    except httpx.HTTPError as exc:
+        raise ApiError(f"Could not reach the Cassis API at {url}: {exc}") from exc
+
+    if response.status_code == 401:
+        raise AuthError(_REJECTED_CREDENTIAL)
+    if response.status_code == 422:
+        raise TableDecisionRefusedError(_detail_or_text(response))
+    if response.status_code in (403, 404):
+        raise _project_scope_error(response)
+    if response.status_code >= 400:
+        raise ApiError(f"Cassis API returned HTTP {response.status_code}: {response.text[:500]}")
+
+
 def get_issue(
     *,
     api_url: str,

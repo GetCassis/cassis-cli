@@ -3,7 +3,17 @@
 Versions match the releases on [PyPI](https://pypi.org/project/cassis-cli/); dates are the
 PyPI upload date.
 
-## 3.8.0 (unreleased)
+## 3.9.0 (2026-11-24)
+
+### Added
+
+- `cassis issues tables` lists the warehouse tables users asked for that the context does not describe: one line per table, the most asked first, with its conversations, users and a suggested domain. `--layer modeled|raw` narrows the list on projects that tell modeled tables from raw ones, `--domain` keeps the tables suggested for a domain, `--search` matches part of a name, `--offset` pages through the list, and `--json` carries every candidate domain with its count and the owners each table goes to. `cassis issues tables set-aside <TABLE>` records that the team will not add a table (`--undo` takes it back). Requires a server with the tables-to-add list.
+
+### Changed
+
+- `cassis issues list` no longer prints "tables to add" issues, one per domain: those requests are now the list above.
+
+## 3.8.0 (2026-11-19)
 
 ### Removed
 
